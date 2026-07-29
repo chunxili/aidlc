@@ -1,0 +1,264 @@
+# API 设计 — 优惠券发放与核销中心
+
+前缀 `/api`。认证：`Authorization: Bearer <JWT>`。角色枚举：`OPERATOR` / `USER` / `VERIFIER` / `ADMIN`。
+时间字段一律 ISO 8601 带时区（UTC，NFR-005）。金额为字符串形式的十进制数，避免浮点误差。
+
+## 一、通用错误响应
+
+```json
+{ "code": "OUT_OF_STOCK", "message": "库存不足" }
+```
+
+| HTTP | code | 触发条件 |
+|---|---|---|
+| 400 | `VALIDATION_ERROR` | 入参非法，附 `details` 字段级说明 |
+| 401 | `UNAUTHENTICATED` | 缺失/过期/签名无效的 JWT，不区分原因 |
+| 403 | `FORBIDDEN` | 角色越权。响应体**不含**目标资源任何字段（SC-008） |
+| 403 | `RISK_BLOCKED` | 风控硬阈值拦截（FR-050） |
+| 403 | `RISK_MANUAL_REVIEW` | 风控判定需人工审核（FR-050） |
+| 404 | `CAMPAIGN_NOT_FOUND` / `COUPON_NOT_FOUND` | |
+| 409 | `OUT_OF_STOCK` | 库存不足 |
+| 409 | `PER_USER_LIMIT_REACHED` | 已达领取上限（`per_user_limit=1` 时即"已领取"场景） |
+| 409 | `CAMPAIGN_NOT_ACTIVE` | 活动未开始或已结束 |
+| 409 | `COUPON_ALREADY_USED` | 已核销 |
+| 409 | `COUPON_EXPIRED` | 券已过期 |
+| 409 | `STOCK_CANNOT_DECREASE` | 试图调低库存 |
+| 409 | `FIELD_IMMUTABLE` | 修改不可变字段 |
+| 500 | `INTERNAL_ERROR` | 不含堆栈与凭证 |
+
+**AI 故障不产生错误码**：一律降级并以响应体内 `degraded` 标识（FR-041、FR-051）。
+
+分页统一 `?page=1&page_size=20`，响应 `{ "items": [...], "total": N, "page": 1, "page_size": 20 }`。
+
+## 二、认证
+
+### POST /api/auth/login — 全部角色
+
+请求 `{ "username": "user_a" }`。Mock 认证，不校验密码（FR-060）。
+
+响应 200：
+```json
+{ "access_token": "<jwt>", "token_type": "bearer",
+  "user": { "id": 3, "username": "user_a", "display_name": "用户A", "role": "USER" } }
+```
+
+错误：401 `UNAUTHENTICATED`（用户不存在）。
+
+### GET /api/auth/me — 全部角色
+
+返回当前 token 对应用户。用于前端刷新后恢复登录态。
+
+## 三、活动管理
+
+### POST /api/campaigns — `OPERATOR`
+
+```json
+{ "name": "周末餐饮券", "category": "FOOD", "face_value": "20.00",
+  "total_stock": 100, "start_at": "2026-07-30T00:00:00Z", "end_at": "2026-08-06T00:00:00Z",
+  "validity_minutes": 1440, "per_user_limit": 1 }
+```
+
+规则：`total_stock>=1`、`face_value>0`、`end_at>start_at`、`validity_minutes>=1`、`per_user_limit>=1`（缺省 1）。**不预生成任何券记录**（ADR-001）。
+
+响应 201：活动完整字段 + `claimed_count: 0` + `remaining_stock` + 派生 `status`。
+错误：400、403。
+
+### PATCH /api/campaigns/{id} — `OPERATOR`
+
+可改 `name`、`category`、`end_at`、`per_user_limit`、`total_stock`（**仅调高**）。
+不可改 `face_value`、`validity_minutes`、已开始活动的 `start_at`。
+
+`validity_minutes` 不可改的原因：已领出券的 `expires_at` 已落库（ADR-003），改它会使同一活动内的券遵循两套规则。
+
+错误：409 `STOCK_CANNOT_DECREASE`、409 `FIELD_IMMUTABLE`、404、403。
+
+### GET /api/campaigns — `OPERATOR` / `ADMIN`
+
+分页返回全部活动，含 `claimed_count`、`remaining_stock`、派生 `status`（`PENDING` / `ACTIVE` / `ENDED`，由 `start_at`/`end_at` 与 `now()` 计算，不落库，ADR-002）。
+查询参数：`status`、`category`。
+
+### GET /api/campaigns/available — `USER`
+
+返回**当前可领**的活动：`ACTIVE` 且 `claimed_count < total_stock` 且该用户已领数 `< per_user_limit`。
+不下发统计与风控字段（最小权限）。附 `my_claimed_count`，供前端展示剩余可领次数。
+
+### GET /api/campaigns/{id} — `OPERATOR` / `ADMIN`
+
+单个活动详情 + FR-030 指标。
+
+## 四、领券
+
+### POST /api/coupons/claim — `USER`
+
+```json
+{ "campaign_id": 12 }
+```
+
+执行顺序（system-architecture.md 第三节时序图）：风控前置（事务外）→ 条件 UPDATE 扣库存 → 计算 seq 与限领校验 → 生成券码 → 计算 `expires_at` → INSERT。
+
+响应 201：
+```json
+{ "coupon": { "id": 88, "code": "7K4MPQ2XZ9", "campaign_id": 12, "campaign_name": "周末餐饮券",
+              "face_value": "20.00", "status": "UNUSED", "seq": 1,
+              "claimed_at": "2026-07-30T02:00:00Z", "expires_at": "2026-07-30T02:01:00Z" },
+  "risk": { "score": 12, "decision": "PASS", "decided_by": "RULE", "degraded": false } }
+```
+
+错误：409 `OUT_OF_STOCK`、409 `PER_USER_LIMIT_REACHED`、409 `CAMPAIGN_NOT_ACTIVE`、403 `RISK_BLOCKED`、403 `RISK_MANUAL_REVIEW`、404、403 越权。
+
+**幂等性说明**：领券**不是**幂等操作（`per_user_limit>1` 时重复调用应各得一张券）。防重复由 `per_user_limit` + `UNIQUE(campaign_id,user_id,seq)` 承担，不引入幂等键。
+
+**关键约束**：本接口调用链中不得出现 Bedrock 调用，除非风控落入灰区（FR-010 AC-5）。
+
+### GET /api/coupons/my — `USER`
+
+分页返回本人券。过滤条件强制取自 token 的 `sub`，**忽略客户端传入的任何 user_id**（FR-011）。
+每项含派生 `display_status`：`USED` → `已核销`；`UNUSED` 且未到期 → `可用`；`UNUSED` 且已到期 → `已过期`（ADR-002）。
+查询参数：`display_status`。
+
+## 五、核销
+
+### GET /api/redemptions/{code} — `VERIFIER`
+
+核销前查验，**纯读，不改变任何状态**（FR-021）。
+
+响应 200：
+```json
+{ "code": "7K4MPQ2XZ9", "campaign_name": "周末餐饮券", "face_value": "20.00",
+  "display_status": "可用", "owner": "u***_a", "redeemable": true, "reason": null }
+```
+
+`owner` 脱敏。`redeemable=false` 时 `reason` 与 POST 的判定口径**完全一致**（FR-021 AC-2）。
+错误：404 `COUPON_NOT_FOUND`、403。
+
+### POST /api/redemptions — `VERIFIER`
+
+```json
+{ "code": "7K4MPQ2XZ9" }
+```
+
+单条条件 UPDATE。`rowcount=0` 时回查并按 **status 优先、时间其次**判定（ADR-004）。
+
+响应 200：
+```json
+{ "code": "7K4MPQ2XZ9", "face_value": "20.00",
+  "used_at": "2026-07-30T02:00:30Z", "used_by": "verifier001" }
+```
+
+错误：
+- 409 `COUPON_ALREADY_USED` —— **重复核销返回此项，且第 2、3、4 次响应体完全一致**（NFR-002、SC-004）
+- 409 `COUPON_EXPIRED`
+- 404 `COUPON_NOT_FOUND`
+- 403 越权
+
+**终态优先**：已核销的券在过期后再核销，返回 `COUPON_ALREADY_USED` 而非 `COUPON_EXPIRED`（ADR-004）。
+
+## 六、AI 推荐
+
+### GET /api/recommendations — `USER`
+
+独立只读接口，**不在领券路径上**（ADR-005）。参数 `?limit=5`。
+
+响应 200：
+```json
+{ "items": [ { "campaign_id": 12, "campaign_name": "周末餐饮券", "category": "FOOD",
+               "face_value": "20.00", "remaining_stock": 87, "reason": "你最近核销过 2 张餐饮券…" } ],
+  "degraded": false, "degrade_reason": null, "cold_start": false }
+```
+
+约束：
+- 候选集为确定性 SQL 召回，AI 只重排并生成理由；返回的 `campaign_id` **逐个校验在候选白名单内，不在的丢弃**（ADR-009）
+- 已过期、已售罄、该用户已领满的活动永不出现
+- 冷启动（零历史）时 `cold_start=true`，按热度排序并使用新人话术
+- **列表非空是硬保证**：AI 不可用时降级为热度排序 + 模板理由，`degraded=true`（FR-041）
+- 候选集本身为空（确无可领活动）时返回空数组，属合法状态，不是错误
+
+## 七、风控与风险标记
+
+### GET /api/risk/events — `OPERATOR`
+
+分页返回风险标记，参数 `status`（`PENDING`/`RELEASED`/`KEPT`）、`user_id`。
+
+每项含：`user`、`window_request_count`、`risk_score`、`decision`、`decided_by`、`degraded`、`created_at`、以及 **`ai_reason`**（经 `ai_invocation_id` 关联取出的判定理由）。
+
+`ai_reason` 是必需字段而非附加信息：运营若看不到判定理由，无从审核标记（FR-052 AC-2）。规则层直接拦截时该字段为规则说明文本（如"10 秒内 50 次请求，超过硬阈值 10"）。
+
+### POST /api/risk/events/{id}/handle — `OPERATOR`
+
+```json
+{ "action": "RELEASE" }
+```
+
+`RELEASE` → 标记置 `RELEASED` 并清除 `users.risk_blocked`，用户可自行重领；`KEEP` → 置 `KEPT`，限制保留。
+
+**幂等**：重复处理同一标记返回当前状态，不报错（FR-052）。
+错误：404、403。
+
+**不存在"批准发券"接口**：审核对象是风险标记，不是待批领取；系统不代为补发，用户走正常领取路径（ADR-007）。
+
+## 八、统计
+
+### GET /api/stats/campaigns/{id} — `ADMIN` / `OPERATOR`
+
+```json
+{ "campaign_id": 12, "total_stock": 100, "claimed_count": 13, "remaining_stock": 87,
+  "used_count": 5, "active_count": 6, "expired_count": 2,
+  "claim_rate": 0.13, "redeem_rate": 0.3846,
+  "claim_rate_basis": "分母为库存总量（系统无曝光埋点）",
+  "redeem_rate_basis": "分母为已领取数" }
+```
+
+两个 `*_basis` 字段是设计的一部分，用于前端直接展示口径说明（FR-030 AC-4）。`claimed_count = 0` 时 `redeem_rate` 为 `null`，前端显示「—」。
+
+### GET /api/stats/overview — `ADMIN`
+
+全局汇总 + **异常指标**（FR-031）：
+
+```json
+{ "campaign_count": 4, "total_stock": 400, "claimed_count": 51, "used_count": 20,
+  "risk_blocked_24h": 40, "risk_pending_count": 1 }
+```
+
+`risk_blocked_24h` 在 SC-006 演示后应当场增加，是风控真实生效的最直观证据。
+
+### GET /api/stats/integrity — `ADMIN`
+
+对账自检端点，返回 INV-1 / INV-2 的校验结果：
+
+```json
+{ "inv1_stock_overflow_count": 0, "inv2_mismatch_campaign_ids": [], "ok": true }
+```
+
+设置该端点的目的：让"库存守恒"与"券的完全划分"可在演示时一键展示，而非只存在于文档里（NFR-009）。
+
+## 九、运维
+
+### GET /api/health — 公开
+
+```json
+{ "status": "ok", "database": "ok", "ai_configured": false }
+```
+
+`ai_configured=false` 表示未注入 Bedrock 凭证，AI 功能处于降级模式。**该状态不影响 `status: ok`**（FR-071 AC-2）。
+
+## 十、路由与角色映射（FR-061 强制表）
+
+| 方法与路径 | 允许角色 |
+|---|---|
+| POST /api/auth/login、GET /api/health | 公开 |
+| GET /api/auth/me | 全部已认证 |
+| POST /api/campaigns、PATCH /api/campaigns/{id} | OPERATOR |
+| GET /api/campaigns、GET /api/campaigns/{id} | OPERATOR, ADMIN |
+| GET /api/campaigns/available | USER |
+| POST /api/coupons/claim、GET /api/coupons/my | USER |
+| GET /api/recommendations | USER |
+| GET /api/redemptions/{code}、POST /api/redemptions | VERIFIER |
+| GET /api/risk/events、POST /api/risk/events/{id}/handle | OPERATOR |
+| GET /api/stats/campaigns/{id} | ADMIN, OPERATOR |
+| GET /api/stats/overview、GET /api/stats/integrity | ADMIN |
+
+此表是 SC-008 权限验收的直接依据，实现时应由单一装饰器/依赖强制，不得散落在处理函数内部。
+
+## 十一、无 Webhook
+
+本项目无外部回调与消息通知（MVP 范围外），故不设计 Webhook 及其签名校验。

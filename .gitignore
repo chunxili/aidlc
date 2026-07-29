@@ -1,0 +1,60 @@
+# ---- 凭证与本地配置（NFR-004：凭证不得进入仓库）----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials
+credentials.json
+secrets.json
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+dist/
+build/
+
+# ---- Node / 前端 ----
+node_modules/
+.pnpm-store/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# ---- 数据库与本地数据 ----
+*.sqlite
+*.sqlite3
+*.db
+pgdata/
+docker/pgdata/
+
+# ---- 日志与临时文件 ----
+*.log
+logs/
+tmp/
+.cache/
+
+# ---- 编辑器与操作系统 ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Workshop 素材（不属于交付代码）----
+*.zip
+_skill_tmp/
