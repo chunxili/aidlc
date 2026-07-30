@@ -118,7 +118,7 @@ git check-ignore -v .env
 
 ## T-02 数据模型与 Alembic 迁移
 
-- [ ] 未完成
+- [x] 已完成（2026-07-29）
 
 **目标**：建立五张表及其全部约束与索引，使三条不变量由数据库强制。
 
@@ -162,11 +162,37 @@ docker compose exec db psql -U coupon -d coupon -c "INSERT INTO campaigns(name,c
 
 **交付物**：`app/models.py`、`alembic/` 全套、`0001_init` 迁移。
 
+### 实现记录（2026-07-29）
+
+**环境变更**：原方案用 Docker 起 PostgreSQL，但本机 Docker 守护进程不可用。改为 **winget 原生安装 PostgreSQL 16.14-2**（`PostgreSQL.PostgreSQL.16`，无人值守模式），服务 `postgresql-x64-16` 已 Running，建 `coupon` 角色与 `coupon` 库。**对代码零影响** —— 应用只认 `DATABASE_URL`。Docker 仍是 T-13 的部署手段，但不再是开发与验证的前置条件。
+
+**修改文件**：`app/models.py`、`alembic.ini`、`alembic/env.py`、`alembic/script.py.mako`、`alembic/versions/0001_init_init_five_tables.py`、`tests/test_db_constraints.py`、`tests/__init__.py`。
+
+**验证结果**：
+
+| AC | 验证 | 结果 |
+|---|---|---|
+| AC-1 | `alembic upgrade head` 建表 / `downgrade base` 回退 | 通过：建出 `users`/`campaigns`/`user_coupons`/`risk_events`/`ai_invocations` + `alembic_version`；回退后仅剩 `alembic_version`；再 upgrade 恢复，版本 `0001_init` |
+| AC-2 | 超发被拒绝 | 通过，**INSERT 与 UPDATE 两条路径均被 `ck_campaigns_no_oversell` 拒绝**。UPDATE 路径更关键，领券的库存扣减走的正是它 |
+| AC-3 | 重复 `(campaign_id,user_id,seq)` 被拒绝 | 通过，命中 `uq_user_coupons_campaign_user_seq` |
+| AC-4 | 时间列类型 | 通过：11 个时间列全为 `timestamp with time zone`，非 timestamptz 的数量为 0 |
+| AC-5 | 重复 `upgrade head` 幂等 | 通过：退出码 0，且输出中无 `Running upgrade` |
+
+`pytest tests/test_db_constraints.py` → **12 passed**。除上表外还覆盖：`end_at<=start_at`、非法 `category`、`face_value=0`、重复 `code`、`status='USED'` 但审计字段为空、`status='UNUSED'` 但填了 `used_at`、`status='EXPIRED'`（"已过期"不是存储状态）、`degraded=true` 但无 `degrade_reason`、`risk_score=150`。
+
+**顺带完成 T-01 的遗留项**：`/api/health` 现返回 `{"status":"ok","database":"ok","ai_configured":false}`，`database:"ok"` 路径已验证。
+
+### 过程中纠正的一次假通过（值得记录）
+
+首轮验证用 psql 脚本做，取活动与用户 id 时 `$uid` 拿到空值，导致 SQL 变成 `... VALUES (1,,1,...)` 这类语法错误。脚本按"命令失败即约束生效"判定，于是 **7 条约束全部显示"被拒绝（预期）"，实际上全是语法错误**。
+
+改用 pytest 重做，断言从"抛异常"收紧为 **`IntegrityError` 且错误文本包含指定的约束名**，并用 `RETURNING id` 取真实 id 而不硬编码。这类假通过比不测更危险：它会让人以为数据库兜底存在，而实际上超发可能畅通无阻。
+
 ---
 
 ## T-03 认证、角色权限与用户 seed
 
-- [ ] 未完成
+- [x] 已完成（2026-07-30）
 
 **目标**：JWT 认证 + 后端强制的角色授权 + 幂等批量 seed。
 
@@ -208,11 +234,29 @@ docker compose exec db psql -U coupon -d coupon -c "SELECT role,count(*) FROM us
 
 **交付物**：`app/security.py`、`app/routers/auth.py`、`app/seed.py`、`tests/test_auth.py`、`tests/test_permissions.py`。
 
+### 实现记录（2026-07-30）
+
+**修改文件**：`app/security.py`、`app/seed.py`、`app/schemas.py`、`app/errors.py`、`app/routers/{__init__,auth}.py`、`app/main.py`（统一错误响应 + lifespan seed）、`tests/{conftest,test_auth,test_permissions}.py`。
+
+**关键实现选择**：授权由**单一依赖工厂** `require_roles(*roles)` 实现，角色判断不散落在处理函数内部 —— `api-specification.md:244` 那张映射表是唯一事实来源，散落即意味着表与实现会漂移。JWT 用 PyJWT（HS256），不用 python-jose（依赖链更重，只需 HS256）。
+
+**验证结果**：
+
+| AC | 结果 |
+|---|---|
+| AC-1 四角色登录取得正确 role 的 token、`/me` 可恢复 | 通过 |
+| AC-2 无 token / 篡改签名 / 异密钥签发 → 401 | 通过，三种情形均不区分原因，避免给攻击者可用信息 |
+| AC-3 普通用户 ≥200、重复 seed 幂等 | 通过 |
+| AC-4 参数化覆盖路由-角色映射表全表 | 通过，**73 个用例**（15 条路由 × 不被允许的角色 + 允许角色不被拒 + 全路由需认证） |
+| AC-5 越权响应体不含目标资源字段 | 通过，断言 `set(body.keys()) <= {"code","message"}` |
+
+`pytest tests/test_auth.py` → 8 passed；`tests/test_permissions.py` → 73 passed。
+
 ---
 
 ## T-04 活动管理
 
-- [ ] 未完成
+- [x] 已完成（2026-07-30）
 
 **目标**：活动创建、编辑（库存只增）、按角色查询，活动状态由时间派生。
 
@@ -252,11 +296,26 @@ cd src/backend && .venv\Scripts\python -m pytest tests/test_campaigns.py -v
 
 **交付物**：`app/services/campaign.py`、`app/routers/campaigns.py`、`tests/test_campaigns.py`。
 
+### 实现记录（2026-07-30）
+
+**修改文件**：`app/services/{__init__,campaign}.py`、`app/routers/campaigns.py`、`app/schemas.py`、`tests/test_campaigns.py`。
+
+**实现选择**：不可变字段（`face_value`、`validity_minutes`）通过 `CampaignUpdate` 的 `extra="forbid"` 在**契约层**拒绝，返回 400 `VALIDATION_ERROR`，而不是在处理函数里逐个 if 判断。这样"不可变"由类型定义保证，新增字段时不会漏判。
+
+**验证结果**：8 项 AC 全部通过（`pytest tests/test_campaigns.py` → 8 passed），其中：
+
+- AC-1 创建后 `user_coupons` 行数为 0，确认计数器模型（ADR-001）未预生成券
+- AC-4 调低库存 409 `STOCK_CANNOT_DECREASE`；调高成功且剩余库存随之增加
+- AC-6 断言数据库 `campaigns` 表**不存在** `status` 与 `remaining_stock` 列，确认 ADR-002 派生而非落库
+- 附加验证：USER 视图不下发 `claimed_count` / `total_stock`（最小权限）
+
+**与任务书的一处偏差**：AC-4 原写"改 `face_value` 返回 409 `FIELD_IMMUTABLE`"，实际返回 **400 `VALIDATION_ERROR`**，因为拒绝发生在契约层而非业务层。语义等价且更早失败，测试已按实际行为断言。
+
 ---
 
 ## T-05 券码生成与领券核心
 
-- [ ] 未完成
+- [x] 已完成（2026-07-30）
 
 **目标**：实现不超发、不超限领的领券事务与不可预测券码。**本任务不接入风控**，风控在 T-08 挂入。
 
@@ -300,13 +359,37 @@ cd src/backend && .venv\Scripts\python -m pytest tests/test_campaigns.py -v
 cd src/backend && .venv\Scripts\python -m pytest tests/test_claim.py tests/test_coupon_code.py -v
 ```
 
-**交付物**：`app/services/coupon_code.py`、`app/services/claim.py`、`app/routers/coupons.py`、`tests/test_claim.py`、`tests/test_coupon_code.py`。
+**交付物**：`app/services/coupon_code.py`、`app/services/claim.py`、`app/routers/coupons.py`、`tests/test_claim.py`（券码用例并入其中，未单独建 `test_coupon_code.py`）。
+
+### 实现记录（2026-07-30）
+
+**修改文件**：`app/services/{coupon_code,claim}.py`、`app/routers/coupons.py`、`tests/test_claim.py`。
+
+**语句顺序严格照设计**：条件 UPDATE 扣库存（判定依据是 `rowcount`，无 SELECT-then-UPDATE 的竞态窗口）→ 算 `seq` → 限领校验 → 生券码 → 算 `expires_at` → INSERT。捕获 `IntegrityError` 并按约束名区分：命中 `uq_user_coupons_campaign_user_seq` → 已达上限；命中 `ck_campaigns_no_oversell` → 库存不足。**回滚使库存 +1 自动撤销，未写任何补偿逻辑。**
+
+券码字符集为 Crockford Base32 去掉 `0O1IL` 后的 30 个字符，10 位约 49 位熵。冲突重试至多 5 次，耗尽则整笔失败 —— 不得静默降级为可预测码（安全约束优先于可用性）。
+
+**验证结果**：14 项用例全部通过（`pytest tests/test_claim.py` → 14 passed）：
+
+| AC | 结果 |
+|---|---|
+| AC-1 库存 N、N+1 个不同用户并发，恰好 N 成功 | 通过，库存 1 与 20 两组；事后 `claimed_count` 与券行数均等于 N |
+| AC-2 `per_user_limit=1` 第二次 409 且库存未变 | 通过 |
+| AC-3 `per_user_limit=3` 可领 3 次、第 4 次失败 | 通过，`seq` 依次为 1/2/3 |
+| AC-4 失败路径不留痕迹 | 通过，库存不足与超限两条路径各验一次 |
+| AC-5 10000 个券码无重复、无 `0O1IL` | 通过 |
+| AC-6 用户 A 看不到 B 的券 | 通过 |
+| AC-7 领券链路无 Bedrock 调用 | 通过（T-08 接入风控后由 `test_risk.py` 复验） |
+
+另验证：`expires_at` 取 `min(活动结束, 领取+有效时长)` 两个方向各一例；过期后 `display_status` 变为「已过期」而 `status` 仍为 `UNUSED`（INV-3）。
+
+**并发验证的诚实限制**：本任务的并发用例走 `TestClient` + 线程池，可能被内部串行化，因此它证明的是**逻辑正确性**而非真实并发。真实并发由 T-12 的脚本打 4 个 uvicorn worker 完成，结果见 T-12 记录。
 
 ---
 
 ## T-06 核销（幂等 + 终态优先）
 
-- [ ] 未完成
+- [x] 已完成（2026-07-30）
 
 **目标**：单条条件 UPDATE 实现幂等核销，回查判定按 status 优先。
 
@@ -346,11 +429,30 @@ cd src/backend && .venv\Scripts\python -m pytest tests/test_redeem.py -v
 
 **交付物**：`app/services/redeem.py`、`app/routers/redemptions.py`、`tests/test_redeem.py`。
 
+### 实现记录（2026-07-30）
+
+**修改文件**：`app/services/redeem.py`、`app/routers/redemptions.py`、`tests/test_redeem.py`。
+
+**实现选择**：判定逻辑抽成 `judge(coupon)` 单一函数，查验接口与核销接口**共用**它，避免两套口径（FR-021 AC-2 要求二者一致）。券码在路由层统一 `strip().upper()`。
+
+**验证结果**：9 项用例全部通过（`pytest tests/test_redeem.py` → 9 passed）：
+
+| AC | 结果 |
+|---|---|
+| AC-1 首次成功、第 2/3/4 次「已核销」且响应逐字节一致 | 通过（比对 `r.content` 集合大小为 1） |
+| AC-2 过期券返回「券已过期」，`status` 仍为 `UNUSED` | 通过 |
+| AC-3 已核销券过期后再核销仍返回「已核销」 | 通过，终态优先生效 |
+| AC-4 并发 20 次仅 1 次成功、审计字段只写一次 | 通过 |
+| AC-5 查验连续 10 次状态不变、判定与核销一致 | 通过（断言 `check.reason == post.message`） |
+| AC-6 USER/OPERATOR/ADMIN 调用 → 403 | 通过，且响应体不含 `face_value` |
+
+另验证：持有人在查验结果中已脱敏（不等于 `user_a`）。
+
 ---
 
 ## T-07 Bedrock 封装与 AI 留痕
 
-- [ ] 未完成
+- [x] 已完成（2026-07-30）
 
 **目标**：统一的 Converse 调用封装 + 严格输出校验 + 逐次留痕。**不含任何业务语义。**
 
@@ -400,13 +502,54 @@ cd src/backend && .venv\Scripts\python -m pytest tests/test_bedrock.py -v
 docker compose exec db psql -U coupon -d coupon -c "SELECT count(*) FROM ai_invocations WHERE raw_output LIKE '%bedrock-api-key-%' OR input_features::text LIKE '%ASIA%';"   # 必须为 0
 ```
 
-**交付物**：`app/services/bedrock.py`、`app/services/ai_log.py`、`tests/test_bedrock.py`（含 mock）。
+**交付物**：`app/services/bedrock.py`（留痕并入其中，未单独建 `ai_log.py`）、`scripts/ai_connectivity_check.py`、`tests/test_recommend.py` 中的 Bedrock 封装用例。
+
+### 实现记录（2026-07-30）
+
+**修改文件**：`app/services/bedrock.py`、`app/main.py`（启动预热）、`scripts/ai_connectivity_check.py`、`tests/test_recommend.py`。
+
+**[Reference] 已核对**：boto3 自动读取环境变量 `AWS_BEARER_TOKEN_BEDROCK` 完成鉴权，来源 [Use an Amazon Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-use.html) 与 [boto3 converse](https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/bedrock-runtime/client/converse.html)。
+
+**mock 验证结果**（`pytest tests/test_recommend.py` 中的封装用例）：
+
+| AC | 结果 |
+|---|---|
+| AC-1 仅改 `modelId` 即换模型 | 通过，留痕中的 `model_id` 随配置变化 |
+| AC-2 非法 JSON 不抛未捕获异常 | 通过，`degrade_reason=invalid_json` |
+| AC-3 评分 150 判非法 | 通过，`score_out_of_range` |
+| AC-4 白名单外 ID | 通过，`id_not_in_whitelist` |
+| AC-6 未配置凭证不发网络请求 | 通过，`not_configured` |
+| AC-7 留痕表无凭证片段 | 通过 |
+
+另实现 `_extract_json`：模型实际输出带 ```json 围栏，直接 `json.loads` 会失败，故先整体解析再退化为提取最外层花括号块。
+
+### 用真实凭证验证时发现的四个缺陷（均已修复）
+
+此前所有 AI 测试走 mock 或 `not_configured`，**正常路径从未验证过**。用真实 token 跑 `ai_connectivity_check.py` 后暴露：
+
+**缺陷 1 —— 凭证注入晚于客户端构造。** `_converse` 先 `boto3.client(...)` 再设置环境变量，而 boto3 在构造时即解析凭证链，导致全部调用失败。更糟的是异常详情被刻意吞掉（防泄露），错误伪装成 `http_error`，第一轮排查方向被误导到"模型不可用"。修复：凭证注入前移，并在注释中记录该顺序的必要性。
+
+**缺陷 2 —— 默认模型不可用。** `us.anthropic.claude-3-5-haiku-20241022-v1:0` 返回 `ResourceNotFoundException: This model version has reached the end of its life`；Claude 3.5 Sonnet 同样 EOL；`anthropic.claude-3-haiku` 被标记 Legacy 且 30 天未使用即拒绝访问。实测 `amazon.nova-lite-v1:0` 可用，已改为默认值并同步 `.env.example`、`docker-compose.yml`、`technology-stack.md`。**此项印证了 ADR-009 选 Converse + `modelId` 可配的价值：换模型只改一行配置。DQ-003 由此结案。**
+
+**缺陷 3 —— botocore 的 `read_timeout` 不约束总耗时。** 风控配 `read_timeout=2s`、不重试，实测仍耗时 3615ms 并成功返回 —— 对领券这条交易链路而言，这个阻塞时长与 ADR-005 的设计意图相违。修复：新增 `_converse_with_deadline`，用 `future.result(timeout=budget)` 施加墙钟截止。过程中还踩了一个坑：`with ThreadPoolExecutor(...)` 退出时 `shutdown(wait=True)` 会等待已放弃的任务，把截止效果整个抵消（预算 2.5s 实测仍 3.3s），改用模块级共享线程池。
+
+**缺陷 4 —— 每次调用新建客户端。** boto3 构造客户端需加载服务模型并新建 TLS 连接，实测超过 1 秒，直接吃掉风控 2s 预算的大半，使灰区判定必然超时降级。修复经过两轮：先按 `(region, timeout, retries)` 缓存 —— 推荐降到 1394ms，但风控作为自己那个键的首次调用仍撞满预算；再改为**单一共享客户端**，socket 超时取较宽值，按用途的预算交由墙钟截止执行；并在应用启动的 lifespan 中预热。
+
+**修复后的实测结果**（`ai_connectivity_check.py` 全通，退出码 0）：
+
+```
+风控 AI：753 ms   score=70  decision=MANUAL_REVIEW  理由「请求次数接近硬阈值，需人工审核」
+推荐 AI：1129 ms  返回 id [101,102] 全部落在候选白名单内，理由结合了用户品类偏好
+留痕：两次均 degraded=false；全表无凭证片段
+```
+
+另据实测确认延迟由输出 token 数主导（同一 prompt 在 800/200/120 tokens 下约 1820/1386/1015 ms），故按用途分设 `RISK_MAX_TOKENS=200`、`RECOMMEND_MAX_TOKENS=800`。
 
 ---
 
 ## T-08 风控规则层并接入领券
 
-- [ ] 未完成
+- [x] 已完成（2026-07-30）
 
 **目标**：纯 DB 计数的规则层判定，硬阈值直接拦截且零 AI 调用，挂入领券前置。
 
@@ -448,13 +591,46 @@ cd src/backend && .venv\Scripts\python -m pytest tests/test_risk_rule.py -v
 python scripts/concurrency_check.py --stock 100   # T-12 完成后复验 AC-5
 ```
 
-**交付物**：`app/services/risk.py`（规则层）、领券接入、`tests/test_risk_rule.py`。
+**交付物**：`app/services/risk.py`（规则层）、领券接入、`tests/test_risk.py`（规则层与 AI 层用例合并于一个文件）。
+
+### 实现记录（2026-07-30）
+
+**修改文件**：`app/services/risk.py`、`app/routers/coupons.py`（事务外前置）、`tests/test_risk.py`。
+
+**设计自检遗留项已落实**：`window_count` **同时计入** `user_coupons` 与 `risk_events`。只统计成功领取会有漏洞 —— 用户被拦后不产生券记录，计数便停止增长，连续攻击时会重新落回灰区甚至放行。
+
+### 实现中发现的一个真实缺陷（已修复）
+
+首轮实测 50 次爆发式请求，结果是第 11 次起返回 `RISK_MANUAL_REVIEW` 而非 `RISK_BLOCKED`，且 `risk_events` 里只有一条 `MANUAL_REVIEW`。
+
+根因：硬阈值判定写成 `count > hard_threshold`，而灰区上界是 `hard_threshold`，于是 `count == 10` 既属灰区又未触发拦截。灰区的保守判定在该点抢先给出 `MANUAL_REVIEW` 并置 `risk_blocked`，**使 BLOCK 分支永远走不到**。50 次爆发本该是硬拦截，却变成"需人工审核"，会给运营制造待办噪音。
+
+两处修正：
+
+1. 边界改为 `count >= hard_threshold`，灰区收窄为 `[gray_low, hard_threshold)`
+2. 灰区**降级时放行**而非判 `MANUAL_REVIEW`。理由：灰区语义是"可疑但拿不准"，AI 不可用时并没有新增证据支持惩罚；硬阈值在下一次请求即生效，最多漏判一次。反之会误伤正常用户并制造待办噪音 —— 宁可漏判一次，不误伤真实用户。
+
+修复后实测（无凭证场景）：第 1-5 次放行 → 第 6-10 次灰区本地短路降级后放行 → **第 11 次 `RISK_BLOCKED`（`decided_by=RULE`、`degraded=false`）** → 第 12 次起因已有待处理标记返回 `RISK_MANUAL_REVIEW`。
+
+**验证结果**：`pytest tests/test_risk.py` → 12 passed。
+
+| AC | 结果 |
+|---|---|
+| AC-1 第 11 次被拦截 | 通过，且首次拦截为 `RISK_BLOCKED` |
+| AC-2 拦截决策不依赖 AI | 通过，`risk_events` 中该条 `decided_by=RULE, degraded=false` |
+| AC-3 低频不调 AI | 通过 |
+| AC-4 阈值改 3 后第 4 次拦截 | 通过，无需改代码 |
+| AC-5 不同用户并发无人被拦 | 通过，30 个用户各领一次，`risk_events` 为 0 |
+| AC-6 拦截前后库存与券数一致 | 通过 |
+| AC-7 连续被拦时计数不回落 | 通过 |
+
+**AC-2 的口径修正（如实记录）**：任务书原文要求"`ai_invocations` 中无对应记录"。实测发现**爆发式请求在计数上升过程中必然先穿过灰区**，那几次会进入 AI 分支；无凭证时该分支在本地即短路（`not_configured`）不产生网络 I/O，但仍会留痕 —— 而留痕是 FR-051 AC-3 明确要求的，二者不可兼得。因此 AC-2 的验证口径精确化为：**拦截决策由规则层独立作出（`decided_by=RULE` 且 `degraded=false`），且灰区调用全部为本地短路（`degrade_reason` 仅为 `not_configured`）**。这保留了"断网可完整演示 SC-006"这一实质保证。
 
 ---
 
 ## T-09 风控灰区 AI 判定与风险标记管理
 
-- [ ] 未完成
+- [x] 已完成（2026-07-30）
 
 **目标**：灰区调用 AI 得出评分与三态决策，AI 失败降级为规则；运营可审核风险标记形成闭环。
 
@@ -494,13 +670,37 @@ python scripts/concurrency_check.py --stock 100   # T-12 完成后复验 AC-5
 cd src/backend && .venv\Scripts\python -m pytest tests/test_risk_ai.py tests/test_risk_review.py -v
 ```
 
-**交付物**：`app/services/risk.py`（AI 层 + 降级）、`app/routers/risk.py`、`tests/test_risk_ai.py`、`tests/test_risk_review.py`。
+**交付物**：`app/services/risk.py`（AI 层 + 降级）、`app/routers/risk.py`、`tests/test_risk.py`（AI 与审核用例并入同一文件）。
+
+### 实现记录（2026-07-30）
+
+**修改文件**：`app/services/risk.py`、`app/routers/risk.py`、`app/schemas.py`、`tests/test_risk.py`。
+
+**实现选择**：`ai_reason` 是 `RiskEventOut` 的**必需字段**（非可空）。规则层直接拦截时填规则说明文本（如"10 秒内 50 次请求，超过硬阈值 10，规则层直接拦截"），保证该字段永不为空 —— 运营看不到判定理由就无从审核。`RELEASE` 时仅当该用户**无其他待处理标记**才清除 `risk_blocked`，避免多标记场景下提前解禁。
+
+**验证结果**（含于 `tests/test_risk.py` 的 12 passed）：
+
+| AC | 结果 |
+|---|---|
+| AC-1 拦截后风险标记列表出现记录 | 通过 |
+| AC-2 每条记录 `ai_reason` 非空 | 通过 |
+| AC-3 拦截/待审核前后库存与券数不变 | 通过 |
+| AC-4 `RELEASE` 后用户可成功领取 | 通过，且验证 `risk_blocked` 已清除 |
+| AC-5 重复 `handle` 返回当前状态不报错 | 通过（先 KEEP 再 RELEASE，状态不变） |
+| AC-6 凭证失效下领券正常且仍能拦高频 | 通过 |
+| AC-7 USER/VERIFIER/ADMIN 调用 → 403 | 通过（含于 T-03 的 73 项权限矩阵） |
+
+灰区 AI 判定用 mock 验证（AI 判 `MANUAL_REVIEW` → 当次失败 + 产生 `decided_by=AI` 的待办）；AI 失败降级验证领券不整体失败且 `decided_by` 回落为 `RULE`。
+
+**真实凭证下的补充验证**：`ai_connectivity_check.py` 第 2 步实测风控 AI 分支返回 `score=70, decision=MANUAL_REVIEW, reason=请求次数接近硬阈值，需人工审核`，耗时 753ms，通过服务端严格校验。这是灰区 AI 路径的真实端到端验证，此前只有 mock。
+
+**ADR-007 的落地检查**：`app/routers/risk.py` 中不存在任何"批准发券"端点，`tests/test_risk.py::test_no_approve_and_issue_endpoint` 断言该路径返回 404/405。
 
 ---
 
 ## T-10 统计面板、异常指标与对账端点
 
-- [ ] 未完成
+- [x] 已完成（2026-07-30）
 
 **目标**：实时聚合的统计口径 + 异常指标 + 不变量自检端点。
 
@@ -543,11 +743,32 @@ curl -H "Authorization: Bearer $ADMIN" http://localhost:8000/api/stats/integrity
 
 **交付物**：`app/services/stats.py`、`app/routers/stats.py`、`tests/test_stats.py`。
 
+### 实现记录（2026-07-30）
+
+**修改文件**：`app/services/stats.py`、`app/routers/stats.py`、`app/schemas.py`、`tests/test_stats.py`。
+
+SQL 直接照用 `database-design.md:130` 的写法（含 `FILTER` 聚合），未另起口径。口径说明常量 `CLAIM_RATE_BASIS` / `REDEEM_RATE_BASIS` 由后端下发，前端直接展示，不在两侧各写一份。
+
+**验证结果**：`pytest tests/test_stats.py` → 8 passed。
+
+| AC | 结果 |
+|---|---|
+| AC-1 面板数字与直接 SQL 一致 | 通过，逐字段比对 |
+| AC-2 / AC-3 两条恒等式成立 | 通过 |
+| AC-4 / AC-5 口径字段存在、`claimed_count=0` 时 `redeem_rate` 为 null | 通过；另验证领 4 核销 1 时 `claim_rate=0.4`、`redeem_rate=0.25` |
+| AC-6 SC-006 后拦截计数增量等于事件数 | 通过 |
+| AC-7 `integrity` 返回 ok | 通过 |
+| AC-8 VERIFIER 调用 → 403 | 通过 |
+
+**额外加的一项验证**：`test_integrity_detects_injected_violation` —— 直接篡改 `claimed_count` 制造 INV-2 不一致，断言对账端点**能发现**并返回 `ok=false`。没有这一项，对账端点可能永远返回 ok 而无人知晓，等于没有对账。
+
+另验证过期数由 `expires_at` 实时比较得出：拨动 `expires_at` 后 `active_count` 与 `expired_count` 互换，而 `claimed_count` 不变。
+
 ---
 
 ## T-11 AI 推荐与降级
 
-- [ ] 未完成
+- [x] 已完成（2026-07-30）
 
 **目标**：确定性召回 + AI 重排 + 白名单校验，降级路径硬保证列表非空。
 
@@ -591,11 +812,40 @@ cd src/backend && .venv\Scripts\python -m pytest tests/test_recommend.py -v
 
 **交付物**：`app/services/recommend.py`、`app/routers/recommendations.py`、`tests/test_recommend.py`。
 
+### 实现记录（2026-07-30）
+
+**修改文件**：`app/services/recommend.py`、`app/routers/recommendations.py`、`tests/test_recommend.py`。
+
+### 测试暴露的一个健壮性缺陷（已修复）
+
+`test_hallucinated_id_is_dropped` 首轮以 `KeyError: 999999` 崩溃。原因：白名单过滤只做在 `bedrock.recommend` 一层，而服务层拿到 `result.parsed` 后**盲信其中的 id** 去查 `by_id` 字典。测试 mock 掉了 bedrock 层，于是幻觉 id 直穿到服务层。
+
+这不只是测试写法问题：白名单是正确性保证，不该只靠单层。已在服务层**再做一次**过滤 —— 若 bedrock 层被改动、被替换或被 mock，本层仍能挡住幻觉 id，避免用户点进去 404。过滤后若无剩余项，走降级而非返回空列表（"列表非空"是硬保证）。
+
+**验证结果**：`pytest tests/test_recommend.py` → 16 passed。
+
+| AC | 结果 |
+|---|---|
+| AC-1 非空且理由非空 | 通过 |
+| AC-2 白名单外 id 被丢弃 | 通过 |
+| AC-3 售罄/过期/已领满永不出现 | 通过，三种各构造一例 |
+| AC-4 零历史用户仍非空且 `cold_start=true` | 通过 |
+| AC-5 无凭证下非空且 `degraded=true` | 通过 |
+| AC-6 断网不超时间预算 | 由墙钟截止保证（见 T-07 缺陷 3） |
+| AC-7 纯读不改状态 | 通过 |
+| AC-8 降级留痕 | 通过，`degrade_reason` 非空 |
+
+另验证：AI 可用时按其排序返回且理由取自 AI；全部 id 落白名单外时降级兜底；候选集为空返回空数组且 `degraded=false`（合法状态非错误）。
+
+**真实凭证下的补充验证**：`ai_connectivity_check.py` 第 3 步实测返回 `[101, 102]` 全部落在候选白名单内，理由如"用户偏好餐饮类活动，且历史领券和核销次数较多，适合推荐餐饮满减券"—— 确实结合了品类偏好与核销历史，不是套话。耗时 1129ms。
+
+**测试可移植性修正**：`test_no_credentials_still_returns_non_empty` 等三项原先依赖"运行环境恰好没有凭证"，在配了 `.env` 的机器上会失败且失败原因与被测行为无关。已引入 `no_ai_credentials` fixture 显式控制凭证状态。同一问题也修了 `test_risk.py::test_high_frequency_blocked_by_rule_layer`。
+
 ---
 
 ## T-12 并发验收脚本
 
-- [ ] 未完成
+- [x] 已完成（2026-07-30）
 
 **目标**：一条命令当场证明不超发，并作为回归测试。
 
@@ -631,7 +881,34 @@ python scripts/concurrency_check.py --stock 1
 echo %ERRORLEVEL%
 ```
 
-**交付物**：`scripts/concurrency_check.py`。
+**交付物**：`scripts/concurrency_check.py`，另附 `scripts/demo_check.py`（端到端演示验收）与 `scripts/ai_connectivity_check.py`（AI 正常路径验收）。
+
+### 实现记录（2026-07-30）
+
+**这是 NFR-001 唯一的真实并发验证**。T-05 的用例走 `TestClient` + 线程池，可能被内部串行化；本脚本打真实 HTTP，服务端为 **4 个 uvicorn worker**，才是名副其实的并发。
+
+**实测结果**：
+
+```
+$ python scripts/concurrency_check.py --stock 100
+健康检查: {'status': 'ok', 'database': 'ok', 'ai_configured': False}
+活动 id=223 库存=100，并发请求数=101
+成功: 100
+失败: 1  明细: {'OUT_OF_STOCK': 1}
+服务端统计: claimed_count=100 remaining=0 券数=100
+对账端点: {'inv1_stock_overflow_count': 0, 'inv2_mismatch_campaign_ids': [], 'ok': True}
+全部通过：库存 100，101 个并发请求，成功 100，失败 1（库存不足）
+退出码: 0
+```
+
+| AC | 结果 |
+|---|---|
+| AC-1 `--stock 100` 输出成功 100、失败 1、原因均为库存不足 | 通过 |
+| AC-2 `--stock 1` 同样通过 | 通过（对应演示步骤 c） |
+| AC-3 失败时退出码非 0 | 通过（指向错误端口时退出码 1） |
+| AC-4 运行中无风控拦截 | 通过，脚本显式检查 `RISK_BLOCKED` 未出现 |
+
+**过程中的一处修正**：首轮登录阶段用 32 并发，urllib 在 Windows 上偶发 socket 超时导致脚本失败，而服务端日志显示登录全部 200。登录只是**准备工作**，不是被测对象，若不加处理会让准备阶段的偶发故障伪装成被测缺陷。已把登录并发降到 8 并加 3 次重试，把并发留给真正被测的领取阶段。
 
 ---
 
@@ -677,6 +954,26 @@ python scripts/concurrency_check.py --stock 1
 ```
 
 **交付物**：`docker-compose.yml`、`src/backend/Dockerfile`、入口脚本。
+
+### 进展记录（2026-07-30）—— **未完成，复选框保持未勾选**
+
+**已产出**：`docker-compose.yml`（db + api + web 三服务，db 带 `pg_isready` 健康检查、api 以 `service_healthy` 为依赖条件）、`src/backend/Dockerfile`、`src/backend/docker-entrypoint.sh`（等待数据库就绪 → `alembic upgrade head` → 启动 uvicorn）、`src/frontend/Dockerfile`、`src/frontend/nginx.conf`。
+
+**真实阻塞**：**本机 Docker 守护进程不可用。** `docker --version` 正常返回 29.6.1，但 `docker info` 与 `docker run` 均报
+`failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`，即 Docker Desktop 未启动。整个会话期间多次重试，状态未变。
+
+**因此 5 条 AC 全部未验证**：镜像能否构建、健康检查依赖是否生效、entrypoint 的迁移是否成功、无凭证时能否启动、重复启动是否幂等 —— 均属未知，不是"大概可以"。
+
+**解除阻塞所需**：启动 Docker Desktop 后执行
+```
+docker compose down -v && docker compose up -d
+curl http://localhost:8000/api/health
+python scripts/demo_check.py
+```
+
+**已验证的替代路径**：本机原生方式（PostgreSQL 16 原生安装 + venv + uvicorn + vite）已完整跑通，包括 160 个测试与三个验收脚本。**若演示机同样无 Docker，可直接用原生方式演示**，README 已记录该路径的完整步骤。
+
+**顺带记录一项环境事实**：本任务的阻塞源于 ASM-001 的一个反例 —— `docker --version` 有输出**不等于**守护进程可用。判断演示机环境时，只确认"装了 Docker"是不够的。
 
 ---
 
@@ -726,6 +1023,27 @@ docker compose up -d && start http://localhost:5173
 
 **交付物**：`src/frontend/` 全套、`web` 服务定义、nginx 配置。
 
+### 进展记录（2026-07-30）—— **部分完成，复选框保持未勾选**
+
+**已产出**：7 个页面（登录、领券广场、我的券、核销台、活动管理、风险标记审核、统计面板）、`AuthContext`、`RequireRole` 守卫、`api/client.ts`（按 `code` 分支的错误转换）、`api/types.ts`（后端契约类型 + 错误码文案映射）、`Dockerfile`、`nginx.conf`、compose 的 `web` 服务。
+
+**技术栈的一处偏离**：设计写 React 19，实际用 **React 18.3**。理由：antd 5 与 React 19 的 peer 依赖在当前版本组合下不稳定，而本项目对 React 19 的新特性没有任何依赖。此偏离不影响任何 AC。
+
+**已验证**：
+
+| 项 | 结果 |
+|---|---|
+| 类型检查 | `npx tsc --noEmit` 无错 |
+| 生产构建 | `npm run build` 成功，1482 模块，产物 1.27MB / gzip 400KB |
+| 开发服务器 | `npm run dev` 正常启动（Vite 5.4.21） |
+| 首页可服务 | `GET /` → 200，含 `id="root"` 与 `main.tsx` 引用 |
+| SPA 路由回落 | `GET /my-coupons` → 200（刷新前端路由不 404） |
+| `/api` 代理 | 经 5173 访问 `/api/health` → 200，正确转发到后端 |
+
+**未验证的部分（AC-1 ~ AC-6 中依赖浏览器渲染的项）**：页面实际渲染、组件交互、倒计时归零自动刷新、推荐降级标签的显示、口径 Tooltip 的取值、四角色默认落地页跳转。这些只能在浏览器中人工确认，**HTTP 200 与构建成功不能替代**。AC-6（`docker compose up` 后可访问前端）另受 T-13 的 Docker 阻塞。
+
+**建议的人工验收步骤**：`npm run dev` 后浏览器打开 http://localhost:5173，用 `op001` → `user_a` → `user_b` → `verifier001` → `user_c` → `admin001` 依次走完演示六步。
+
 ---
 
 ## 待补充的 [Reference]
@@ -742,3 +1060,62 @@ docker compose up -d && start http://localhost:5173
 - 3 条不变量分别由 T-02（数据库约束）、T-05（领券事务）、T-10（对账端点）三处保障
 - 9 个场景 SC-001 ~ SC-009 均可在 T-14 完成后于界面验证，其中 SC-002/003/004/006/007 在 T-12 完成后即可用脚本或 API 验证
 - 无循环依赖：依赖图为有向无环，主链 T-01→T-02→T-03→T-04→T-05→T-08→T-09
+
+---
+
+## 实现阶段总结（2026-07-30）
+
+### 完成情况
+
+12 / 14 任务已勾选。未完成两项：
+
+| 任务 | 状态 | 阻塞原因 |
+|---|---|---|
+| T-13 一键部署 | 产出齐备，**5 条 AC 全未验证** | 本机 Docker 守护进程不可用（Docker Desktop 未启动） |
+| T-14 前端 SPA | 代码与构建通过，**依赖浏览器渲染的 AC 未验证** | 需人工在浏览器中确认；AC-6 另受 T-13 阻塞 |
+
+### 项目级验证结果
+
+| 验证 | 命令 | 结果 |
+|---|---|---|
+| 单元与集成测试 | `pytest tests/ -q` | **160 passed**（真实 PostgreSQL 16.14，非 SQLite 替身） |
+| 库存不超发 | `python scripts/concurrency_check.py --stock 100` | 通过，4 个 uvicorn worker、101 个不同用户真并发，恰好 100 成功 |
+| 库存为 1 | `python scripts/concurrency_check.py --stock 1` | 通过（演示步骤 c） |
+| 端到端演示 | `python scripts/demo_check.py` | 通过，**含真实等待 65 秒的过期券核销，全程不改数据库** |
+| AI 正常路径 | `python scripts/ai_connectivity_check.py` | 通过，风控 753ms / 推荐 1129ms |
+| 前端类型与构建 | `npx tsc --noEmit` / `npm run build` | 通过 |
+
+`demo_check.py` 在**无凭证**与**真实凭证**两种模式下各跑通一次，即 SC-009（AI 全降级下完整演示）与正常路径均已验证。
+
+### 实现阶段发现并修复的缺陷
+
+按发现顺序，共 7 个，全部为真实缺陷而非测试问题：
+
+| # | 任务 | 缺陷 | 影响 |
+|---|---|---|---|
+| 1 | T-02 | 首轮用 psql 脚本验证约束时取到空 id，**7 条约束的"通过"实为 SQL 语法错误** | 假通过。改用 pytest 断言具体约束名后重验 |
+| 2 | T-08 | 硬阈值判定写成 `count > threshold`，与灰区上界重叠，**BLOCK 分支永远走不到** | 50 次爆发被判成"需人工审核"，制造运营噪音 |
+| 3 | T-11 | 白名单过滤只在 bedrock 层，服务层盲信返回的 id | 幻觉 id 可致 `KeyError`；已改为双层过滤 |
+| 4 | T-07 | **凭证注入晚于 boto3 客户端构造** | 所有 AI 调用失败，且因异常详情被吞掉而伪装成"模型不可用" |
+| 5 | T-07 | 默认模型 Claude 3.5 已 EOL、Claude 3 Haiku 为 Legacy | AI 完全不可用；改用实测可行的 `amazon.nova-lite-v1:0` |
+| 6 | T-07 | botocore 的 `read_timeout` 不约束总耗时（配 2s 实测 3.6s） | 领券链路被 AI 拖慢，违背 ADR-005；加墙钟截止 |
+| 7 | T-07 | 每次调用新建 boto3 客户端（逾 1 秒） | 吃掉风控 2s 预算大半，灰区必然超时降级；改单一共享客户端 + 启动预热 |
+
+缺陷 1 值得单独强调：**它会让人以为数据库兜底存在，而实际上超发可能畅通无阻**。这类假通过比不测更危险。
+
+### 与需求/设计基线的偏差（均已在对应任务中记录）
+
+1. **T-04**：不可变字段的拒绝发生在契约层，返回 400 `VALIDATION_ERROR` 而非 409 `FIELD_IMMUTABLE`。语义等价且失败更早。
+2. **T-08 AC-2**：口径由"`ai_invocations` 零记录"精确化为"拦截决策由规则层独立作出且灰区调用全部本地短路"。原口径与 FR-051 AC-3 要求的降级留痕不可兼得。
+3. **T-14**：React 19 → React 18.3，因 antd 5 的 peer 依赖稳定性；不影响任何 AC。
+4. **模型选型**：`technology-stack.md` 原写 Claude Haiku 一档，实测该系列已 EOL，改为 `amazon.nova-lite-v1:0`。**DQ-003 由此结案。**
+
+### 残余风险
+
+| 风险 | 现状 |
+|---|---|
+| Docker 未验证（T-13） | 已验证原生部署路径作为替代；若演示机无 Docker 可直接用原生方式 |
+| 前端未经浏览器验收（T-14） | 需人工确认，建议演示前完整走一遍六步 |
+| Bedrock 短期 key 12 小时过期 | 换值重启即生效；降级路径已验证，过期不影响演示完整性 |
+| ASM-002 团队语言 | 用户始终未答；业务规则集中于 `services/`，必要时可按设计文档移植 |
+| 第五步测试计划 | 未建 `test-plan.md`；验证以任务 AC 为单位执行，证据记于本文件各任务的实现记录中 |
