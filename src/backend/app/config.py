@@ -45,7 +45,11 @@ class Settings(BaseSettings):
 
     # ---- Bedrock（FR-042 / CON-002）----
     bedrock_region: str = "us-east-1"
-    bedrock_model_id: str = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+    # 实测选定：Claude 3.5 系列已 EOL（ResourceNotFoundException: This model
+    # version has reached the end of its life），Claude 3 Haiku 被标记为 Legacy 且
+    # 30 天未使用即拒绝访问。nova-lite 实测可用，属轻量档，符合风控要低延迟的要求。
+    # 换模型只改此项，不改代码（ADR-009 选 Converse API 的收益在此兑现）。
+    bedrock_model_id: str = "amazon.nova-lite-v1:0"
     # 短期 API key，有效期 12 小时。过期后替换环境变量并重启即生效，系统不自动续期。
     aws_bearer_token_bedrock: str = ""
     # 超时分级：风控位于领券这条交易链路上，宁可降级也不拖延。
