@@ -62,16 +62,31 @@ def get_current_user(
     user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
     if user is None:
         raise _unauthenticated()
+    # 只拒 REJECTED：PENDING 必须能取到身份，否则无法查看自己的申请进度（ADR-012）
+    if user.status == "REJECTED":
+        raise _unauthenticated()
     return user
 
 
 def require_roles(*roles: str):
-    """返回一个依赖，只允许指定角色通过。
+    """返回一个依赖，只允许指定角色且账号已启用的用户通过。
+
+    "能否登录"与"能否办业务"是两层（ADR-012）：待审核账号可以登录看进度，
+    但不得访问任何业务接口，且返回专用错误码供前端跳转到审核进度页 ——
+    否则用户会遇到"登录成功却处处 403 且没有解释"。
 
     越权时响应体只含 code 与 message，**不泄露目标资源是否存在**（SC-008）。
     """
 
     def _dep(user: User = Depends(get_current_user)) -> User:
+        if user.status == "PENDING":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "ACCOUNT_PENDING_APPROVAL",
+                    "message": "账号正在审核中，通过后即可使用",
+                },
+            )
         if user.role not in roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

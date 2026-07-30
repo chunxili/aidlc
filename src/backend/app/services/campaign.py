@@ -12,9 +12,10 @@ import datetime as dt
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..errors import campaign_not_found, field_immutable, stock_cannot_decrease
+from ..errors import BusinessError, campaign_not_found, field_immutable, stock_cannot_decrease
 from ..models import Campaign, UserCoupon
 from ..schemas import CampaignCreate, CampaignOut, CampaignUpdate
+from . import pricing
 
 
 def derive_status(c: Campaign, now: dt.datetime | None = None) -> str:
@@ -31,7 +32,12 @@ def to_out(c: Campaign) -> CampaignOut:
         id=c.id,
         name=c.name,
         category=c.category,
+        coupon_type=c.coupon_type,
         face_value=c.face_value,
+        min_order_amount=c.min_order_amount,
+        discount_percent=c.discount_percent,
+        max_discount_amount=c.max_discount_amount,
+        benefit_text=pricing.describe(c),
         total_stock=c.total_stock,
         claimed_count=c.claimed_count,
         # 恒等式，不存字段（INV-1）
@@ -51,14 +57,31 @@ def create_campaign(db: Session, payload: CampaignCreate, operator_id: int) -> C
     表达不了的跨字段校验。
     """
     if payload.end_at <= payload.start_at:
-        from ..errors import BusinessError
-
         raise BusinessError(400, "VALIDATION_ERROR", "结束时间必须晚于开始时间")
+
+    # 按券型校验必填字段。数据库亦有 CHECK 兜底，此处提前给出可读的业务错误，
+    # 避免让 IntegrityError 以 500 的形式冒到用户面前。
+    if payload.coupon_type == "CASH":
+        if payload.face_value is None:
+            raise BusinessError(400, "VALIDATION_ERROR", "满减券必须设置减免金额")
+        if payload.discount_percent is not None or payload.max_discount_amount is not None:
+            raise BusinessError(400, "VALIDATION_ERROR", "满减券无需设置折扣比例与封顶金额")
+    else:
+        if payload.discount_percent is None or payload.max_discount_amount is None:
+            raise BusinessError(
+                400, "VALIDATION_ERROR", "折扣券必须设置折扣比例与优惠封顶金额"
+            )
+        if payload.face_value is not None:
+            raise BusinessError(400, "VALIDATION_ERROR", "折扣券无需设置减免金额")
 
     c = Campaign(
         name=payload.name,
         category=payload.category,
+        coupon_type=payload.coupon_type,
         face_value=payload.face_value,
+        min_order_amount=payload.min_order_amount,
+        discount_percent=payload.discount_percent,
+        max_discount_amount=payload.max_discount_amount,
         total_stock=payload.total_stock,
         claimed_count=0,
         start_at=payload.start_at,

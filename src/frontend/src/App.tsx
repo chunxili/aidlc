@@ -4,26 +4,32 @@ import { Avatar, Badge, Dropdown, Layout, Menu, Typography } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { api } from './api/client'
-import { DEFAULT_ROUTE, useAuth } from './auth/AuthContext'
+import { DEFAULT_ROUTE, PENDING_ROUTE, useAuth } from './auth/AuthContext'
 import { RequireRole } from './auth/RequireRole'
 import { AccountSwitcher } from './components/AccountSwitcher'
 import { ROLE_LABEL } from './api/types'
-import type { Overview, Role } from './api/types'
+import type { Overview, PendingUser, Role } from './api/types'
 import { BRAND } from './theme'
 import LoginPage from './pages/LoginPage'
+import RegisterPage from './pages/RegisterPage'
+import PendingPage from './pages/PendingPage'
 import CouponsPage from './pages/CouponsPage'
 import MyCouponsPage from './pages/MyCouponsPage'
 import VerifyPage from './pages/VerifyPage'
 import CampaignsPage from './pages/CampaignsPage'
 import RiskPage from './pages/RiskPage'
 import StatsPage from './pages/StatsPage'
+import RegistrationsPage from './pages/RegistrationsPage'
+import VerifiersPage from './pages/VerifiersPage'
+
+const PUBLIC_ROUTES = ['/login', '/register']
 
 interface NavItem {
   key: string
   label: string
   roles: Role[]
   group: string
-  badge?: 'riskPending'
+  badge?: 'riskPending' | 'registrations'
 }
 
 const NAV: NavItem[] = [
@@ -32,6 +38,14 @@ const NAV: NavItem[] = [
   { key: '/campaigns', label: '活动管理', roles: ['OPERATOR'], group: '营销' },
   { key: '/risk', label: '风险名单', roles: ['OPERATOR'], group: '营销', badge: 'riskPending' },
   { key: '/verify', label: '券码核销', roles: ['VERIFIER'], group: '门店' },
+  {
+    key: '/admin/registrations',
+    label: '注册审核',
+    roles: ['ADMIN'],
+    group: '管理',
+    badge: 'registrations',
+  },
+  { key: '/admin/verifiers', label: '核销人员', roles: ['ADMIN'], group: '管理' },
   { key: '/stats', label: '数据看板', roles: ['ADMIN', 'OPERATOR'], group: '数据' },
 ]
 
@@ -41,37 +55,53 @@ export default function App() {
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(false)
   const [switcherOpen, setSwitcherOpen] = useState(false)
-  const [riskPending, setRiskPending] = useState(0)
+  const [badges, setBadges] = useState({ riskPending: 0, registrations: 0 })
 
-  // 侧边栏的待处理角标：运营与管理员才有权读取该计数
-  const refreshBadge = useCallback(async () => {
-    if (!user || (user.role !== 'OPERATOR' && user.role !== 'ADMIN')) {
-      setRiskPending(0)
+  const refreshBadges = useCallback(async () => {
+    if (!user || user.status !== 'ACTIVE') {
+      setBadges({ riskPending: 0, registrations: 0 })
       return
     }
+    const next = { riskPending: 0, registrations: 0 }
     try {
       if (user.role === 'ADMIN') {
-        const o = await api.get<Overview>('/api/stats/overview')
-        setRiskPending(o.risk_pending_count)
-      } else {
+        const [o, regs] = await Promise.all([
+          api.get<Overview>('/api/stats/overview'),
+          api.get<PendingUser[]>('/api/admin/registrations'),
+        ])
+        next.riskPending = o.risk_pending_count
+        next.registrations = regs.length
+      } else if (user.role === 'OPERATOR') {
         const r = await api.get<{ total: number }>('/api/risk/events?status=PENDING&page_size=1')
-        setRiskPending(r.total)
+        next.riskPending = r.total
       }
     } catch {
-      setRiskPending(0)
+      /* 角标失败不影响主功能 */
     }
+    setBadges(next)
   }, [user])
 
   useEffect(() => {
-    void refreshBadge()
-    const t = setInterval(refreshBadge, 15000)
+    void refreshBadges()
+    const t = setInterval(refreshBadges, 15000)
     return () => clearInterval(t)
-  }, [refreshBadge, location.pathname])
+  }, [refreshBadges, location.pathname])
 
-  if (location.pathname === '/login') {
+  if (PUBLIC_ROUTES.includes(location.pathname)) {
     return (
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+      </Routes>
+    )
+  }
+
+  // 待审核账号只能进进度页，不套主框架：它无权访问任何业务导航
+  if (user && user.status === 'PENDING') {
+    return (
+      <Routes>
+        <Route path={PENDING_ROUTE} element={<PendingPage />} />
+        <Route path="*" element={<Navigate to={PENDING_ROUTE} replace />} />
       </Routes>
     )
   }
@@ -84,18 +114,21 @@ export default function App() {
     label: g,
     children: visible
       .filter((n) => n.group === g)
-      .map((n) => ({
-        key: n.key,
-        label:
-          n.badge === 'riskPending' && riskPending > 0 ? (
-            <span style={{ display: 'flex', justifyContent: 'space-between', paddingRight: 4 }}>
-              {n.label}
-              <Badge count={riskPending} size="small" />
-            </span>
-          ) : (
-            n.label
-          ),
-      })),
+      .map((n) => {
+        const count = n.badge ? badges[n.badge] : 0
+        return {
+          key: n.key,
+          label:
+            count > 0 ? (
+              <span style={{ display: 'flex', justifyContent: 'space-between', paddingRight: 4 }}>
+                {n.label}
+                <Badge count={count} size="small" />
+              </span>
+            ) : (
+              n.label
+            ),
+        }
+      }),
   }))
 
   const current = visible.find((n) => n.key === location.pathname)
@@ -159,7 +192,10 @@ export default function App() {
                 </Avatar>
                 <div style={{ lineHeight: 1.25 }}>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>{user.display_name}</div>
-                  <div style={{ fontSize: 12, color: '#8b93a5' }}>{ROLE_LABEL[user.role]}</div>
+                  <div style={{ fontSize: 12, color: '#8b93a5' }}>
+                    {ROLE_LABEL[user.role]}
+                    {user.store_name ? ` · ${user.store_name}` : ''}
+                  </div>
                 </div>
               </div>
             </Dropdown>
@@ -209,7 +245,23 @@ export default function App() {
                 path="/risk"
                 element={
                   <RequireRole roles={['OPERATOR']}>
-                    <RiskPage onHandled={refreshBadge} />
+                    <RiskPage onHandled={refreshBadges} />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="/admin/registrations"
+                element={
+                  <RequireRole roles={['ADMIN']}>
+                    <RegistrationsPage onHandled={refreshBadges} />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="/admin/verifiers"
+                element={
+                  <RequireRole roles={['ADMIN']}>
+                    <VerifiersPage />
                   </RequireRole>
                 }
               />
@@ -221,6 +273,7 @@ export default function App() {
                   </RequireRole>
                 }
               />
+              <Route path={PENDING_ROUTE} element={<PendingPage />} />
             </Routes>
           </div>
         </Layout.Content>

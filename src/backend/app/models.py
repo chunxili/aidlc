@@ -36,6 +36,10 @@ from .db import Base
 ROLES = ("OPERATOR", "USER", "VERIFIER", "ADMIN")
 CATEGORIES = ("FOOD", "TRAVEL", "SHOPPING", "LIFE")
 COUPON_STATUSES = ("UNUSED", "USED")
+# 账号状态（ADR-012）：PENDING 可登录但不可办业务，REJECTED 不可登录
+USER_STATUSES = ("ACTIVE", "PENDING", "REJECTED")
+# 券型（ADR-013）：CASH 满减，DISCOUNT 折扣
+COUPON_TYPES = ("CASH", "DISCOUNT")
 RISK_DECISIONS = ("PASS", "BLOCK", "MANUAL_REVIEW")
 RISK_DECIDED_BY = ("RULE", "AI")
 RISK_STATUSES = ("PENDING", "RELEASED", "KEPT")
@@ -47,6 +51,24 @@ def _in(column: str, values: tuple[str, ...]) -> str:
     return f"{column} IN ({joined})"
 
 
+class Store(Base):
+    """门店主数据（ADR-015）。本期只读，由 seed 写入广州各区门店。"""
+
+    __tablename__ = "stores"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    code: Mapped[str] = mapped_column(String(16), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    district: Mapped[str] = mapped_column(String(16), nullable=False)
+    address: Mapped[str] = mapped_column(String(128), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_stores_district", "district"),)
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -54,6 +76,18 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     display_name: Mapped[str] = mapped_column(String(64), nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 口令杂凑（ADR-011）：scrypt + 每用户随机盐，格式 scrypt$n$r$p$salt_hex$hash_hex。
+    # 参数内嵌于串中，日后调参时旧杂凑仍可校验。禁止明文与无盐快速杂凑。
+    password_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # 账号状态（ADR-012）。核销员与运营注册后为 PENDING，待管理员审核。
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ACTIVE", server_default="ACTIVE")
+    phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # 仅核销员关联门店，由 CHECK 强制
+    store_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("stores.id"), nullable=True)
+    # 审核留痕
+    reviewed_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reject_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
     # risk_blocked 是 risk_events 的派生便利字段，供领券路径单次快速判断，
     # 避免每次领券都聚合 risk_events。一致性由 services/risk 在同一事务内维护。
     risk_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
@@ -61,7 +95,19 @@ class User(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    __table_args__ = (CheckConstraint(_in("role", ROLES), name="ck_users_role"),)
+    __table_args__ = (
+        CheckConstraint(_in("role", ROLES), name="ck_users_role"),
+        CheckConstraint(_in("status", USER_STATUSES), name="ck_users_status"),
+        # 门店归属只对核销员有意义：非核销员不得挂门店，核销员必须挂门店。
+        # 用约束表达而非靠应用层自觉，避免出现"没有门店的核销员"这种无法核销归集的数据。
+        CheckConstraint(
+            "(role = 'VERIFIER' AND store_id IS NOT NULL)"
+            " OR (role <> 'VERIFIER' AND store_id IS NULL)",
+            name="ck_users_store_only_for_verifier",
+        ),
+        Index("ix_users_status_role", "status", "role"),
+        Index("ix_users_store", "store_id"),
+    )
 
 
 class Campaign(Base):
@@ -72,7 +118,17 @@ class Campaign(Base):
     # category 是 AI 生成推荐理由的语义来源（D-07）。缺了它，活动属性只有数字与时间，
     # AI 写不出有实质意义的理由。
     category: Mapped[str] = mapped_column(String(32), nullable=False)
-    face_value: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    # 券型（ADR-013）：CASH 满减券，DISCOUNT 折扣券
+    coupon_type: Mapped[str] = mapped_column(String(16), nullable=False, default="CASH", server_default="CASH")
+    # CASH 券的减免额；DISCOUNT 券置空
+    face_value: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    # 两种券型共用的最低消费门槛，0 表示无门槛
+    min_order_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2), nullable=False, default=0, server_default="0"
+    )
+    # DISCOUNT 券：折后百分比（85 表示 8.5 折）与优惠封顶额，两者均必填
+    discount_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     total_stock: Mapped[int] = mapped_column(Integer, nullable=False)
     # 单调递增，永不回退（INV-1）。无作废功能，故不存在减少的场景。
     claimed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
@@ -94,7 +150,19 @@ class Campaign(Base):
 
     __table_args__ = (
         CheckConstraint(_in("category", CATEGORIES), name="ck_campaigns_category"),
-        CheckConstraint("face_value > 0", name="ck_campaigns_face_value_positive"),
+        CheckConstraint(_in("coupon_type", COUPON_TYPES), name="ck_campaigns_coupon_type"),
+        # 按券型必填，由数据库强制而非应用层判断（ADR-013）
+        CheckConstraint(
+            "coupon_type <> 'CASH' OR (face_value IS NOT NULL AND face_value > 0)",
+            name="ck_campaigns_cash_requires_face_value",
+        ),
+        CheckConstraint(
+            "coupon_type <> 'DISCOUNT' OR (discount_percent IS NOT NULL"
+            " AND discount_percent BETWEEN 1 AND 99"
+            " AND max_discount_amount IS NOT NULL AND max_discount_amount > 0)",
+            name="ck_campaigns_discount_requires_percent_and_cap",
+        ),
+        CheckConstraint("min_order_amount >= 0", name="ck_campaigns_min_order_non_negative"),
         CheckConstraint("total_stock > 0", name="ck_campaigns_total_stock_positive"),
         CheckConstraint("claimed_count >= 0", name="ck_campaigns_claimed_count_non_negative"),
         CheckConstraint("validity_minutes >= 1", name="ck_campaigns_validity_minutes_min"),
@@ -126,6 +194,11 @@ class UserCoupon(Base):
     expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     used_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=True)
+    # 核销门店，使管理员可按门店归集核销数据（ADR-014）
+    used_store_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("stores.id"), nullable=True)
+    # 核销时的事实快照：不可由活动现值重算，因为活动配置可能已被修改
+    order_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
+    discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
 
     __table_args__ = (
         # 限领的并发保障（ADR-001）：并发下两个请求算出同一个 seq，数据库拒绝其中一个，

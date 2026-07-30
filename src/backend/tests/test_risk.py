@@ -70,8 +70,13 @@ def test_high_frequency_blocked_by_rule_layer(client, op_headers, db, no_ai_cred
     assert set(reasons) <= {"not_configured"}, f"出现了非本地短路的 AI 调用: {reasons}"
 
 
-def test_block_leaves_stock_untouched(client, op_headers, db):
-    """AC-6：拦截前后 claimed_count 与券行数均无变化（ADR-007）。"""
+def test_block_leaves_stock_untouched(client, op_headers, db, no_ai_credentials):
+    """AC-6：拦截前后 claimed_count 与券行数均无变化（ADR-007）。
+
+    固定在无凭证下跑：配了真实凭证时，灰区每次调用要等满 2.5 秒的墙钟预算，
+    30 次领取的总耗时会超过 10 秒的风控窗口，导致计数被重置、断言随机失败。
+    本用例验的是规则层行为，与 AI 可用性无关。
+    """
     c = create_campaign(client, op_headers, total_stock=100, per_user_limit=100)
     headers = auth_headers(client, "user191")
     for _ in range(30):

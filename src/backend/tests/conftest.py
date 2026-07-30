@@ -15,13 +15,15 @@ from sqlalchemy import text
 
 from app.db import SessionLocal
 from app.main import app
-from app.seed import seed_users
+from app.seed import DEFAULT_PASSWORD, seed_stores, seed_users
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _seed_once():
     db = SessionLocal()
     try:
+        # 门店须先于用户：核销员账号引用门店编码
+        seed_stores(db)
         # 测试只需少量批量用户；并发验收脚本另行使用完整 seed。
         seed_users(db, normal_user_count=210)
     finally:
@@ -80,7 +82,9 @@ def no_ai_credentials():
 
 
 def token_for(client: TestClient, username: str) -> str:
-    r = client.post("/api/auth/login", json={"username": username})
+    r = client.post(
+        "/api/auth/login", json={"username": username, "password": DEFAULT_PASSWORD}
+    )
     assert r.status_code == 200, r.text
     return r.json()["access_token"]
 
@@ -115,11 +119,14 @@ def admin_headers(client):
 
 
 def make_campaign_payload(**overrides) -> dict:
+    """默认造一张无门槛的满减券，便于既有用例不必关心券型。"""
     now = dt.datetime.now(dt.UTC)
     payload = {
         "name": "测试活动",
         "category": "FOOD",
+        "coupon_type": "CASH",
         "face_value": "20.00",
+        "min_order_amount": "0",
         "total_stock": 5,
         "start_at": (now - dt.timedelta(minutes=1)).isoformat(),
         "end_at": (now + dt.timedelta(days=1)).isoformat(),
@@ -136,10 +143,19 @@ def create_campaign(client: TestClient, op_headers: dict, **overrides) -> dict:
     return r.json()
 
 
+def redeem(client: TestClient, headers: dict, code: str, order_amount: str = "100.00"):
+    """核销。引入券型后订单金额必填（ADR-014），默认给一个足够大的金额。"""
+    return client.post(
+        "/api/redemptions", json={"code": code, "order_amount": order_amount}, headers=headers
+    )
+
+
 __all__ = [
+    "DEFAULT_PASSWORD",
     "Decimal",
     "auth_headers",
     "create_campaign",
     "make_campaign_payload",
+    "redeem",
     "token_for",
 ]

@@ -18,8 +18,8 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs from 'dayjs'
 import { ApiError, api } from '../api/client'
-import { CATEGORY_LABEL, ERROR_MESSAGE } from '../api/types'
-import type { Campaign, CampaignStatus, Paged } from '../api/types'
+import { CATEGORY_LABEL, COUPON_TYPE_LABEL, ERROR_MESSAGE } from '../api/types'
+import type { Campaign, CampaignStatus, CouponType, Paged } from '../api/types'
 import { PageHeader } from '../components/PageHeader'
 
 const STATUS: Record<CampaignStatus, { color: string; text: string }> = {
@@ -38,6 +38,7 @@ export default function CampaignsPage() {
   const [editing, setEditing] = useState<Campaign | null>(null)
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('全部')
+  const [couponType, setCouponType] = useState<CouponType>('CASH')
   const [form] = Form.useForm()
 
   const load = useCallback(async () => {
@@ -72,13 +73,18 @@ export default function CampaignsPage() {
     form.resetFields()
     form.setFieldsValue({
       category: 'FOOD',
+      coupon_type: 'CASH',
       face_value: 20,
+      min_order_amount: 0,
+      discount_percent: 85,
+      max_discount_amount: 50,
       total_stock: 100,
       per_user_limit: 1,
       validity_value: 7,
       validity_unit: 'day',
       range: [dayjs(), dayjs().add(7, 'day')],
     })
+    setCouponType('CASH')
     setOpen(true)
   }
 
@@ -109,10 +115,16 @@ export default function CampaignsPage() {
         message.success('活动已更新')
       } else {
         const [start, end] = v.range as [dayjs.Dayjs, dayjs.Dayjs]
+        const isCash = v.coupon_type === 'CASH'
         await api.post('/api/campaigns', {
           name: v.name,
           category: v.category,
-          face_value: String(v.face_value),
+          coupon_type: v.coupon_type,
+          // 按券型只提交对应字段：后端与数据库都会拒绝混填
+          face_value: isCash ? String(v.face_value) : null,
+          min_order_amount: String(v.min_order_amount ?? 0),
+          discount_percent: isCash ? null : v.discount_percent,
+          max_discount_amount: isCash ? null : String(v.max_discount_amount),
           total_stock: v.total_stock,
           start_at: start.toISOString(),
           end_at: end.toISOString(),
@@ -180,11 +192,18 @@ export default function CampaignsPage() {
               ),
             },
             {
-              title: '面额',
-              dataIndex: 'face_value',
+              title: '券型',
+              dataIndex: 'coupon_type',
               width: 90,
-              align: 'right',
-              render: (v: string) => <Typography.Text strong>¥{Number(v)}</Typography.Text>,
+              render: (v: CouponType) => (
+                <Tag color={v === 'CASH' ? 'volcano' : 'geekblue'}>{COUPON_TYPE_LABEL[v]}</Tag>
+              ),
+            },
+            {
+              title: '优惠内容',
+              dataIndex: 'benefit_text',
+              width: 210,
+              render: (v: string) => <Typography.Text strong>{v}</Typography.Text>,
             },
             {
               title: '状态',
@@ -262,9 +281,60 @@ export default function CampaignsPage() {
 
           {!editing ? (
             <>
-              <Form.Item name="face_value" label="面额（元）" rules={[{ required: true }]}>
-                <InputNumber min={0.01} precision={2} style={{ width: '100%' }} />
+              <Form.Item name="coupon_type" label="券型" rules={[{ required: true }]}>
+                <Segmented
+                  block
+                  onChange={(v) => setCouponType(v as CouponType)}
+                  options={[
+                    { value: 'CASH', label: '满减券' },
+                    { value: 'DISCOUNT', label: '折扣券' },
+                  ]}
+                />
               </Form.Item>
+
+              {couponType === 'CASH' ? (
+                <Form.Item
+                  name="face_value"
+                  label="减免金额（元）"
+                  rules={[{ required: true, message: '请输入减免金额' }]}
+                >
+                  <InputNumber min={0.01} precision={2} style={{ width: '100%' }} addonBefore="减" />
+                </Form.Item>
+              ) : (
+                <>
+                  <Form.Item
+                    name="discount_percent"
+                    label="折扣"
+                    rules={[{ required: true, message: '请输入折扣' }]}
+                    extra="85 表示 8.5 折"
+                  >
+                    <InputNumber
+                      min={1}
+                      max={99}
+                      style={{ width: '100%' }}
+                      addonAfter="%（折后价占比）"
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="max_discount_amount"
+                    label="优惠封顶（元）"
+                    rules={[{ required: true, message: '请设置优惠封顶金额' }]}
+                    extra="必填。无上限的折扣券在大额订单上会造成不可控的营销成本"
+                  >
+                    <InputNumber min={0.01} precision={2} style={{ width: '100%' }} addonBefore="最高减" />
+                  </Form.Item>
+                </>
+              )}
+
+              <Form.Item
+                name="min_order_amount"
+                label="最低消费门槛（元）"
+                rules={[{ required: true }]}
+                extra="填 0 表示无门槛"
+              >
+                <InputNumber min={0} precision={2} style={{ width: '100%' }} addonBefore="满" />
+              </Form.Item>
+
               <Form.Item name="range" label="活动起止时间" rules={[{ required: true }]}>
                 <DatePicker.RangePicker showTime style={{ width: '100%' }} />
               </Form.Item>
@@ -288,8 +358,8 @@ export default function CampaignsPage() {
             </>
           ) : (
             <>
-              <Form.Item label="面额（元）">
-                <InputNumber value={Number(editing.face_value)} disabled style={{ width: '100%' }} />
+              <Form.Item label="优惠内容">
+                <Input value={editing.benefit_text} disabled />
               </Form.Item>
               <Form.Item label="领取后有效期（分钟）">
                 <InputNumber value={editing.validity_minutes} disabled style={{ width: '100%' }} />

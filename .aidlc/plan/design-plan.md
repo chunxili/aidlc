@@ -161,3 +161,70 @@ S-1 ~ S-8 已完成，产出 6 份设计文档：
 | 风控窗口计数口径 | 设计自检 | 仅计成功领取时，连续被拦用户可能重新落回灰区 | 已作为实现要点写入对应任务 |
 
 **门禁状态**：**已通过**。设计产物齐备、一致性自检通过，用户于 2026-07-29 回复「认可」，已进入任务规划并生成 `.aidlc/tasks.md`（审阅状态：已认可）。
+
+---
+
+# 设计变更 CR-001：产品化改造
+
+对应需求变更见 `req-plan.md` 的 CR-001。
+
+## ADR-011 口令用 hashlib.scrypt，不引入新依赖
+
+- **决策**：`hashlib.scrypt(password, salt=16 字节随机, n=16384, r=8, p=1, dklen=32)`，盐与杂凑分列存储；校验用 `hmac.compare_digest`。
+- **理由**：scrypt 是内存硬化 KDF，抗 GPU 暴破；且它在 Python 标准库中，**不增加任何安装失败点**。bcrypt 与 argon2 需要 C 扩展包，在不可控的演示机上是额外风险。
+- **代价**：参数需手工选定而非由库自动升级；已把参数写入常量并注明，日后调参时旧杂凑仍可校验（杂凑串内含参数）。
+- **明确排除**：明文、无盐杂凑、MD5/SHA1/裸 SHA256。这些不是"简化"，是缺陷。
+
+## ADR-012 账号状态机与登录准入分离
+
+- **决策**：`users.status ∈ {ACTIVE, PENDING, REJECTED}`。登录本身只校验凭证与"非 REJECTED"，**业务接口的准入另由依赖检查 `status == ACTIVE`**。
+- **理由**：`PENDING` 用户必须能登录，否则无法查看自己的申请进度，只会反复提交注册造成垃圾数据。但它不能访问任何业务接口。把"能否登录"与"能否办业务"拆成两层，二者都简单；合成一层则必然出现"登录了却处处 403 且没有解释"的糟糕体验。
+- **落地**：`get_current_user` 只拒 REJECTED；`require_roles` 额外要求 ACTIVE，并对 PENDING 返回专用错误码 `ACCOUNT_PENDING_APPROVAL`，前端据此跳转到审核进度页。
+
+## ADR-013 券型建模：共用门槛，分化优惠计算
+
+- **决策**：`campaigns.coupon_type ∈ {CASH, DISCOUNT}`。
+  - 共用 `min_order_amount`（最低消费门槛，可为 0）
+  - `CASH`：`face_value` 为减免额，必填且 > 0
+  - `DISCOUNT`：`discount_percent`（1~99，表示折后百分比）与 `max_discount_amount`（封顶）必填，`face_value` 置空
+- **数据库强制**：用两条 CHECK 表达"按券型必填"，而不是留给应用层判断：
+
+  ```sql
+  CHECK (coupon_type <> 'CASH' OR (face_value IS NOT NULL AND face_value > 0))
+  CHECK (coupon_type <> 'DISCOUNT' OR (discount_percent IS NOT NULL
+         AND discount_percent BETWEEN 1 AND 99 AND max_discount_amount IS NOT NULL))
+  ```
+
+- **`max_discount_amount` 为折扣券必填而非可选**：无上限的折扣券在大额订单上造成不可控的营销成本，这是真实业务的硬约束，不是防御性编程。
+- **替代方案**：为两种券型分建两张表 —— 被否，它们的生命周期、库存、限领、核销逻辑完全相同，分表会把所有共用逻辑复制一遍。
+
+## ADR-014 核销引入订单金额，但不改变幂等来源
+
+- **决策**：`POST /api/redemptions` 新增必填 `order_amount`。核销流程变为：校验金额门槛 → 条件 UPDATE → 计算并落库实际优惠金额与核销门店。
+- **理由**：引入券型后，没有订单金额就既无法判断门槛、也无法算折扣券的优惠额。这是券型的必然结果，不是额外复杂度。
+- **幂等性不受影响**：幂等仍由券的状态机保证（ADR-004 不变）。门槛校验是**前置条件**，位于条件 UPDATE 之前；重复核销时条件 UPDATE 的 `rowcount=0`，走原有的回查判定，返回「已核销」。
+- **判定顺序**：先看券状态（已核销/已过期），**再看金额门槛**。理由与 ADR-004 的终态优先一致 —— 一张已核销的券，即使这次的订单金额不达标，也应回「已核销」而非「未达门槛」，否则核销员会以为换个订单就能再用一次。
+- **新增落库字段**：`user_coupons.order_amount`、`discount_amount`、`used_store_id`。前两者是核销时的事实快照，不可由现值重算（活动配置可能已改）；`used_store_id` 使管理员可按门店归集核销数据。
+
+## ADR-015 门店为主数据，本期只读
+
+- **决策**：`stores` 表由 seed 写入广州 11 个区的门店，本期不提供增删改接口。
+- **理由**：门店主数据的维护（开店、闭店、迁址、编号规则）是独立的业务范围，牵扯审批与历史数据关联。本期需要门店只是为了让核销员归属与核销归集成立，做只读即可满足全部新增需求。
+- **`stores` 与 `users` 的关系**：`users.store_id` 仅对 `VERIFIER` 有意义，用 CHECK 强制：非核销员不得关联门店，核销员必须关联门店。
+
+## 对既有设计文档的影响
+
+| 文档 | 变更 |
+|---|---|
+| `database-design.md` | 新增 `stores` 表；`users` 加 4 列；`campaigns` 加 4 列；`user_coupons` 加 3 列；对应 CHECK 与索引 |
+| `api-specification.md` | 新增注册、门店、审核、名册端点；核销请求体加 `order_amount`；新增 3 个错误码 |
+| `frontend-design.md` | 新增注册页、审核进度页、管理员审核队列页、核销人员名册页；活动表单按券型切换；核销台加订单金额 |
+| `technology-stack.md` | 无新增依赖（scrypt 在标准库） |
+
+## 残余风险
+
+| 风险 | 处置 |
+|---|---|
+| 首个管理员从何而来 | 由 seed 写入初始管理员账号（自举问题无法靠注册解决）；生产环境应改为部署时一次性初始化并强制改密 |
+| scrypt 参数未来需上调 | 杂凑串内含参数，可按需渐进升级；本期不做自动重杂凑 |
+| 注册无验证码与频率限制 | 本期不做（超出需求范围）；已在 README 标注为上线前必补项 |

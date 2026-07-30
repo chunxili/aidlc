@@ -10,9 +10,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Category = Literal["FOOD", "TRAVEL", "SHOPPING", "LIFE"]
 CampaignStatus = Literal["PENDING", "ACTIVE", "ENDED"]
+CouponType = Literal["CASH", "DISCOUNT"]
+RegisterRole = Literal["USER", "VERIFIER", "OPERATOR"]
 
 
-# ---------- 认证 ----------
+# ---------- 门店 ----------
+
+class StoreOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    code: str
+    name: str
+    district: str
+    address: str
+
+
+# ---------- 认证与注册 ----------
 
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -20,14 +33,32 @@ class UserOut(BaseModel):
     username: str
     display_name: str
     role: str
+    status: str
+    phone: str | None = None
+    store_id: int | None = None
+    store_name: str | None = None
+    reject_reason: str | None = None
 
 
 class LoginIn(BaseModel):
     username: str
-    # 需求 4.7 允许使用 Mock 用户，本项目不实现密码体系，故此字段**不做校验**。
-    # 保留它是为了让登录界面具备常规形态；界面上明示"当前环境未启用密码校验"，
-    # 不制造"已校验"的错觉。
-    password: str | None = None
+    password: str
+
+
+class RegisterIn(BaseModel):
+    username: str = Field(min_length=4, max_length=64)
+    password: str = Field(min_length=8, max_length=128)
+    display_name: str = Field(min_length=1, max_length=64)
+    role: RegisterRole
+    phone: str | None = Field(default=None, max_length=20)
+    # 仅核销人员需要，其余角色传入将被拒绝
+    store_id: int | None = None
+
+
+class RegisterOut(BaseModel):
+    user: UserOut
+    # 核销员与运营注册后需管理员审核，前端据此决定跳转到进度页还是直接登录
+    needs_approval: bool
 
 
 class LoginOut(BaseModel):
@@ -36,12 +67,52 @@ class LoginOut(BaseModel):
     user: UserOut
 
 
+# ---------- 管理员审核与名册 ----------
+
+class PendingUserOut(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    role: str
+    phone: str | None
+    store_id: int | None
+    store_name: str | None
+    store_district: str | None
+    created_at: dt.datetime
+
+
+class ReviewIn(BaseModel):
+    approve: bool
+    reason: str | None = Field(default=None, max_length=256)
+
+
+class VerifierOut(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    phone: str | None
+    status: str
+    store_id: int
+    store_code: str
+    store_name: str
+    store_district: str
+    redeemed_count: int
+    created_at: dt.datetime
+
+
 # ---------- 活动 ----------
 
 class CampaignCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     category: Category
-    face_value: Decimal = Field(gt=0)
+    coupon_type: CouponType = "CASH"
+    # CASH 券必填；DISCOUNT 券须留空
+    face_value: Decimal | None = Field(default=None, gt=0)
+    # 两种券型共用的最低消费门槛，0 表示无门槛
+    min_order_amount: Decimal = Field(default=Decimal(0), ge=0)
+    # DISCOUNT 券必填：折后百分比（85 = 8.5 折）与优惠封顶
+    discount_percent: int | None = Field(default=None, ge=1, le=99)
+    max_discount_amount: Decimal | None = Field(default=None, gt=0)
     total_stock: int = Field(ge=1)
     start_at: dt.datetime
     end_at: dt.datetime
@@ -69,7 +140,13 @@ class CampaignOut(BaseModel):
     id: int
     name: str
     category: Category
-    face_value: Decimal
+    coupon_type: CouponType
+    face_value: Decimal | None
+    min_order_amount: Decimal
+    discount_percent: int | None
+    max_discount_amount: Decimal | None
+    # 由后端统一生成的优惠描述，前端直接展示，避免两端各拼一套文案
+    benefit_text: str
     total_stock: int
     claimed_count: int
     remaining_stock: int
@@ -86,7 +163,12 @@ class AvailableCampaignOut(BaseModel):
     id: int
     name: str
     category: Category
-    face_value: Decimal
+    coupon_type: CouponType
+    face_value: Decimal | None
+    min_order_amount: Decimal
+    discount_percent: int | None
+    max_discount_amount: Decimal | None
+    benefit_text: str
     remaining_stock: int
     end_at: dt.datetime
     validity_minutes: int
@@ -101,7 +183,10 @@ class CouponOut(BaseModel):
     code: str
     campaign_id: int
     campaign_name: str
-    face_value: Decimal
+    coupon_type: CouponType
+    face_value: Decimal | None
+    min_order_amount: Decimal
+    benefit_text: str
     status: str
     display_status: str
     seq: int
@@ -137,19 +222,30 @@ class Paged(BaseModel):
 
 class RedeemIn(BaseModel):
     code: str
+    # 引入券型后必填：没有订单金额既无法判断门槛，也无法算折扣券的优惠额（ADR-014）
+    order_amount: Decimal = Field(gt=0)
 
 
 class RedeemOut(BaseModel):
     code: str
-    face_value: Decimal
+    benefit_text: str
+    order_amount: Decimal
+    discount_amount: Decimal
+    payable_amount: Decimal
     used_at: dt.datetime
     used_by: str
+    store_name: str | None
 
 
 class RedeemCheckOut(BaseModel):
     code: str
     campaign_name: str
-    face_value: Decimal
+    coupon_type: CouponType
+    benefit_text: str
+    face_value: Decimal | None
+    min_order_amount: Decimal
+    discount_percent: int | None
+    max_discount_amount: Decimal | None
     display_status: str
     owner: str
     redeemable: bool
@@ -162,7 +258,9 @@ class RecommendationItem(BaseModel):
     campaign_id: int
     campaign_name: str
     category: Category
-    face_value: Decimal
+    coupon_type: CouponType
+    face_value: Decimal | None
+    benefit_text: str
     remaining_stock: int
     reason: str
 

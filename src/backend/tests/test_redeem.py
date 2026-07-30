@@ -20,12 +20,14 @@ def test_redeem_then_repeat_is_idempotent(client, op_headers, user_a_headers, ve
     """AC-1：首次成功；第 2/3/4 次返回"已核销"且响应体逐字节一致（SC-004）。"""
     code, _ = _claim_code(client, op_headers, user_a_headers)
 
-    first = client.post("/api/redemptions", json={"code": code}, headers=verifier_headers)
+    first = client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=verifier_headers)
     assert first.status_code == 200, first.text
-    assert first.json()["used_by"] == "verifier001"
+    # used_by 回传核销人姓名而非账号名：界面上展示给门店人员看的是姓名
+    assert first.json()["used_by"] == "王磊"
+    assert first.json()["store_name"], "核销结果应带核销门店"
 
     repeats = [
-        client.post("/api/redemptions", json={"code": code}, headers=verifier_headers)
+        client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=verifier_headers)
         for _ in range(3)
     ]
     for r in repeats:
@@ -38,12 +40,12 @@ def test_redeem_then_repeat_is_idempotent(client, op_headers, user_a_headers, ve
 
 def test_used_audit_fields_written_once(client, op_headers, user_a_headers, verifier_headers, db):
     code, _ = _claim_code(client, op_headers, user_a_headers)
-    client.post("/api/redemptions", json={"code": code}, headers=verifier_headers)
+    client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=verifier_headers)
     row1 = db.execute(
         text("SELECT used_at, used_by FROM user_coupons WHERE code = :c"), {"c": code}
     ).one()
     for _ in range(3):
-        client.post("/api/redemptions", json={"code": code}, headers=verifier_headers)
+        client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=verifier_headers)
     row2 = db.execute(
         text("SELECT used_at, used_by FROM user_coupons WHERE code = :c"), {"c": code}
     ).one()
@@ -63,7 +65,7 @@ def test_expired_coupon_cannot_be_redeemed(client, op_headers, user_a_headers, v
     )
     db.commit()
 
-    r = client.post("/api/redemptions", json={"code": code}, headers=verifier_headers)
+    r = client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=verifier_headers)
     assert r.status_code == 409
     assert r.json()["code"] == "COUPON_EXPIRED"
     assert r.json()["message"] == "券已过期"
@@ -82,9 +84,7 @@ def test_terminal_state_wins_over_expiry(
     这是 ADR-004 的核心：回"券已过期"会让核销员以为该券未被使用过。
     """
     code, _ = _claim_code(client, op_headers, user_a_headers)
-    assert client.post(
-        "/api/redemptions", json={"code": code}, headers=verifier_headers
-    ).status_code == 200
+    assert client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=verifier_headers).status_code == 200
 
     db.execute(
         text("UPDATE user_coupons SET expires_at = now() - interval '1 hour' WHERE code = :c"),
@@ -92,12 +92,12 @@ def test_terminal_state_wins_over_expiry(
     )
     db.commit()
 
-    r = client.post("/api/redemptions", json={"code": code}, headers=verifier_headers)
+    r = client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=verifier_headers)
     assert r.json()["code"] == "COUPON_ALREADY_USED", "终态优先失效"
 
 
 def test_unknown_code_404(client, verifier_headers):
-    r = client.post("/api/redemptions", json={"code": "ZZZZZZZZZZ"}, headers=verifier_headers)
+    r = client.post("/api/redemptions", json={"code": "ZZZZZZZZZZ", "order_amount": "100.00"}, headers=verifier_headers)
     assert r.status_code == 404
     assert r.json()["code"] == "COUPON_NOT_FOUND"
 
@@ -109,7 +109,7 @@ def test_concurrent_redeem_only_one_succeeds(
     code, _ = _claim_code(client, op_headers, user_a_headers)
 
     def hit(_):
-        return client.post("/api/redemptions", json={"code": code}, headers=verifier_headers)
+        return client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=verifier_headers)
 
     with ThreadPoolExecutor(max_workers=20) as pool:
         results = list(pool.map(hit, range(20)))
@@ -145,7 +145,7 @@ def test_check_is_read_only_and_consistent(
     check = client.get(f"/api/redemptions/{code}", headers=verifier_headers).json()
     assert check["redeemable"] is False
     assert check["reason"] == "券已过期"
-    post = client.post("/api/redemptions", json={"code": code}, headers=verifier_headers)
+    post = client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=verifier_headers)
     assert post.json()["message"] == check["reason"]
 
 
@@ -160,7 +160,7 @@ def test_non_verifier_roles_forbidden(client, op_headers, user_a_headers, admin_
     """AC-6：USER/OPERATOR/ADMIN 调用核销返回 403。"""
     code, _ = _claim_code(client, op_headers, user_a_headers)
     for headers in (user_a_headers, op_headers, admin_headers):
-        r = client.post("/api/redemptions", json={"code": code}, headers=headers)
+        r = client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=headers)
         assert r.status_code == 403
         assert r.json()["code"] == "FORBIDDEN"
         # 越权响应体不得泄露券的任何字段

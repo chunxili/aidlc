@@ -18,7 +18,7 @@ def test_stats_match_raw_sql(client, op_headers, admin_headers, verifier_headers
     for i in range(1, 5):
         _claim(client, auth_headers(client, f"user{i:03d}"), c["id"])
     code = client.get("/api/coupons/my", headers=auth_headers(client, "user001")).json()["items"][0]["code"]
-    client.post("/api/redemptions", json={"code": code}, headers=verifier_headers)
+    client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=verifier_headers)
 
     api = client.get(f"/api/stats/campaigns/{c['id']}", headers=admin_headers).json()
     raw = db.execute(
@@ -64,7 +64,7 @@ def test_rate_basis_and_denominators(client, op_headers, admin_headers, verifier
     code = client.get(
         "/api/coupons/my", headers=auth_headers(client, "user001")
     ).json()["items"][0]["code"]
-    client.post("/api/redemptions", json={"code": code}, headers=verifier_headers)
+    client.post("/api/redemptions", json={"code": code, "order_amount": "100.00"}, headers=verifier_headers)
 
     s = client.get(f"/api/stats/campaigns/{c['id']}", headers=admin_headers).json()
     assert s["claim_rate"] == 0.4, s

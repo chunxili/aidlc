@@ -27,6 +27,10 @@ ROUTE_MATRIX = [
     ("GET", "/api/stats/campaigns/1", {"ADMIN", "OPERATOR"}),
     ("GET", "/api/stats/overview", {"ADMIN"}),
     ("GET", "/api/stats/integrity", {"ADMIN"}),
+    # 产品化改造新增（CR-001）
+    ("GET", "/api/admin/registrations", {"ADMIN"}),
+    ("POST", "/api/admin/registrations/1/review", {"ADMIN"}),
+    ("GET", "/api/admin/verifiers", {"ADMIN"}),
 ]
 
 ROLE_ACCOUNTS = {
@@ -75,6 +79,19 @@ def test_all_routes_require_authentication(client, method, path, _allowed):
     assert r.status_code == 401, f"{method} {path} 未认证却返回 {r.status_code}"
 
 
-def test_health_and_login_are_public(client):
+def test_public_endpoints(client):
+    """公开端点：健康检查、登录、注册、门店查询。
+
+    门店查询必须公开：核销人员注册时要选门店，此时用户尚未登录。
+    """
+    from app.seed import DEFAULT_PASSWORD
+
     assert client.get("/api/health").status_code == 200
-    assert client.post("/api/auth/login", json={"username": "user_a"}).status_code == 200
+    assert (
+        client.post(
+            "/api/auth/login", json={"username": "user_a", "password": DEFAULT_PASSWORD}
+        ).status_code
+        == 200
+    )
+    assert client.get("/api/stores").status_code == 200
+    assert client.get("/api/stores/districts").status_code == 200

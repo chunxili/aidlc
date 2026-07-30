@@ -1,8 +1,9 @@
-import { Button, Checkbox, Form, Input, Typography, App as AntApp } from 'antd'
+import { Button, Checkbox, Form, Input, Tabs, Typography, App as AntApp } from 'antd'
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { DEFAULT_ROUTE, useAuth } from '../auth/AuthContext'
+import { Link, useNavigate } from 'react-router-dom'
+import { landingFor, useAuth } from '../auth/AuthContext'
 import { ApiError } from '../api/client'
+import { ERROR_MESSAGE } from '../api/types'
 import { BRAND } from '../theme'
 
 export default function LoginPage() {
@@ -11,13 +12,20 @@ export default function LoginPage() {
   const { message } = AntApp.useApp()
   const [loading, setLoading] = useState(false)
 
-  const submit = async (values: { username: string }) => {
+  const submit = async (values: { username: string; password: string }) => {
     setLoading(true)
     try {
-      const user = await login(values.username.trim())
-      navigate(DEFAULT_ROUTE[user.role], { replace: true })
+      const user = await login(values.username.trim(), values.password)
+      navigate(landingFor(user), { replace: true })
     } catch (e) {
-      message.error(e instanceof ApiError && e.status === 401 ? '账号或密码有误' : '登录失败，请稍后重试')
+      if (e instanceof ApiError) {
+        // 申请被驳回时把原因原样告知，用户才知道要补什么材料
+        message.error(
+          e.code === 'ACCOUNT_REJECTED' ? e.message : ERROR_MESSAGE[e.code] ?? '账号或密码有误',
+        )
+      } else {
+        message.error('登录失败，请稍后重试')
+      }
     } finally {
       setLoading(false)
     }
@@ -34,16 +42,16 @@ export default function LoginPage() {
         <div>
           <div className="auth__headline">优惠券全生命周期管理，从投放到核销</div>
           <div className="auth__sub">
-            活动创建、库存管控、券码核销、风险识别与效果分析，统一在一个平台完成。
+            满减券与折扣券灵活配置，库存精准管控，门店即时核销，风险自动识别。
           </div>
           <div className="auth__metrics">
             <div>
-              <div className="auth__metric-value">99.99%</div>
-              <div className="auth__metric-label">库存准确率</div>
+              <div className="auth__metric-value">22</div>
+              <div className="auth__metric-label">广州门店</div>
             </div>
             <div>
-              <div className="auth__metric-value">&lt;100ms</div>
-              <div className="auth__metric-label">核销响应</div>
+              <div className="auth__metric-value">99.99%</div>
+              <div className="auth__metric-label">库存准确率</div>
             </div>
             <div>
               <div className="auth__metric-value">7×24</div>
@@ -52,17 +60,19 @@ export default function LoginPage() {
           </div>
         </div>
 
-        <div className="auth__foot">© 2026 惠码 · 优惠券中心</div>
+        <div className="auth__foot">© 2026 {BRAND.full}</div>
       </aside>
 
       <main className="auth__panel">
         <div className="auth__form">
-          <Typography.Title level={3} style={{ marginBottom: 4 }}>
-            登录
-          </Typography.Title>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 28 }}>
-            请使用企业账号登录，会员请使用会员编号
-          </Typography.Paragraph>
+          <Tabs
+            activeKey="login"
+            onChange={(k) => k === 'register' && navigate('/register')}
+            items={[
+              { key: 'login', label: '登录' },
+              { key: 'register', label: '注册' },
+            ]}
+          />
 
           <Form layout="vertical" onFinish={submit} requiredMark={false} size="large">
             <Form.Item
@@ -72,27 +82,32 @@ export default function LoginPage() {
             >
               <Input placeholder="请输入账号" autoComplete="username" autoFocus />
             </Form.Item>
-            <Form.Item name="password" label="密码">
+            <Form.Item
+              name="password"
+              label="密码"
+              rules={[{ required: true, message: '请输入密码' }]}
+            >
               <Input.Password placeholder="请输入密码" autoComplete="current-password" />
             </Form.Item>
             <Form.Item style={{ marginBottom: 20 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div
+                style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+              >
                 <Checkbox defaultChecked>记住账号</Checkbox>
                 <Typography.Link disabled style={{ fontSize: 13 }}>
                   忘记密码
                 </Typography.Link>
               </div>
             </Form.Item>
-            <Form.Item style={{ marginBottom: 12 }}>
+            <Form.Item style={{ marginBottom: 16 }}>
               <Button type="primary" htmlType="submit" block loading={loading}>
                 登录
               </Button>
             </Form.Item>
           </Form>
 
-          {/* 不制造"已校验密码"的错觉：当前环境确实不校验，如实告知 */}
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            当前为内测环境，密码校验尚未启用。
+          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+            还没有账号？<Link to="/register">立即注册</Link>
           </Typography.Text>
         </div>
       </main>

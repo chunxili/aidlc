@@ -6,6 +6,7 @@ import jwt
 from sqlalchemy import text
 
 from app.config import get_settings
+from app.seed import DEFAULT_PASSWORD
 
 
 def test_four_roles_can_login_with_correct_role(client):
@@ -18,7 +19,9 @@ def test_four_roles_can_login_with_correct_role(client):
     }
     settings = get_settings()
     for username, role in expected.items():
-        r = client.post("/api/auth/login", json={"username": username})
+        r = client.post(
+            "/api/auth/login", json={"username": username, "password": DEFAULT_PASSWORD}
+        )
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["user"]["role"] == role
@@ -36,10 +39,26 @@ def test_me_restores_session(client, user_a_headers):
     assert r.json()["username"] == "user_a"
 
 
-def test_login_unknown_user_401(client):
-    r = client.post("/api/auth/login", json={"username": "no_such_user"})
-    assert r.status_code == 401
-    assert r.json()["code"] == "UNAUTHENTICATED"
+def test_login_unknown_user_and_wrong_password_are_indistinguishable(client):
+    """账号不存在与口令错误必须返回同一个 401。
+
+    区分二者会把"哪些账号存在"泄露给探测者。
+    """
+    unknown = client.post(
+        "/api/auth/login", json={"username": "no_such_user", "password": DEFAULT_PASSWORD}
+    )
+    wrong = client.post(
+        "/api/auth/login", json={"username": "user_a", "password": "wrong-password"}
+    )
+    assert unknown.status_code == 401
+    assert wrong.status_code == 401
+    assert unknown.json() == wrong.json()
+
+
+def test_login_requires_password(client):
+    r = client.post("/api/auth/login", json={"username": "user_a"})
+    assert r.status_code == 400
+    assert r.json()["code"] == "VALIDATION_ERROR"
 
 
 def test_no_token_401(client):

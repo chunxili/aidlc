@@ -16,6 +16,7 @@ from ..schemas import (
 )
 from ..security import require_admin_or_operator, require_operator, require_user
 from ..services import campaign as svc
+from ..services import pricing as svc_pricing
 
 router = APIRouter(prefix="/api/campaigns", tags=["活动管理"])
 
@@ -58,7 +59,12 @@ def available(
             id=c.id,
             name=c.name,
             category=c.category,
+            coupon_type=c.coupon_type,
             face_value=c.face_value,
+            min_order_amount=c.min_order_amount,
+            discount_percent=c.discount_percent,
+            max_discount_amount=c.max_discount_amount,
+            benefit_text=svc_pricing.describe(c),
             remaining_stock=c.total_stock - c.claimed_count,
             end_at=c.end_at,
             validity_minutes=c.validity_minutes,

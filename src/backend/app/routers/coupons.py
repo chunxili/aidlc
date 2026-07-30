@@ -10,6 +10,7 @@ from ..models import Campaign, User, UserCoupon
 from ..schemas import ClaimIn, ClaimOut, CouponOut, Paged, RiskOut
 from ..security import require_user
 from ..services import claim as svc
+from ..services import pricing
 from ..services import risk as risk_svc
 
 router = APIRouter(prefix="/api/coupons", tags=["领券"])
@@ -21,7 +22,10 @@ def _coupon_out(c: UserCoupon, campaign: Campaign) -> CouponOut:
         code=c.code,
         campaign_id=c.campaign_id,
         campaign_name=campaign.name,
+        coupon_type=campaign.coupon_type,
         face_value=campaign.face_value,
+        min_order_amount=campaign.min_order_amount,
+        benefit_text=pricing.describe(campaign),
         status=c.status,
         display_status=svc.display_status(c),
         seq=c.seq,

@@ -25,7 +25,9 @@ def redeem(
     db: Session = Depends(get_db),
     verifier: User = Depends(require_verifier),
 ) -> RedeemOut:
-    return RedeemOut(**svc.redeem(db, payload.code.strip().upper(), verifier))
+    return RedeemOut(
+        **svc.redeem(db, payload.code.strip().upper(), verifier, payload.order_amount)
+    )
 
 
 @router.get("/{code}", response_model=RedeemCheckOut)

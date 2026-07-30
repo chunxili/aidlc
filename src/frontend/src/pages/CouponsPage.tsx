@@ -16,8 +16,14 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ApiError, api } from '../api/client'
-import { CATEGORY_LABEL, ERROR_MESSAGE } from '../api/types'
-import type { AvailableCampaign, Category, ClaimResult, RecommendationResult } from '../api/types'
+import { CATEGORY_LABEL, COUPON_TYPE_LABEL, ERROR_MESSAGE } from '../api/types'
+import type {
+  AvailableCampaign,
+  Category,
+  ClaimResult,
+  CouponType,
+  RecommendationResult,
+} from '../api/types'
 import { PageHeader } from '../components/PageHeader'
 
 const FILTERS: (Category | '全部')[] = ['全部', 'FOOD', 'TRAVEL', 'SHOPPING', 'LIFE']
@@ -26,6 +32,32 @@ function minutesLabel(m: number) {
   if (m < 60) return `${m} 分钟内使用`
   if (m < 1440) return `${Math.round(m / 60)} 小时内使用`
   return `${Math.round(m / 1440)} 天内使用`
+}
+
+/**
+ * 券面主视觉。满减券突出减免金额，折扣券突出折数 ——
+ * 折扣券没有固定面额，硬要显示"¥null"会很难看。
+ */
+function Benefit({
+  item,
+}: {
+  item: { coupon_type: CouponType; face_value: string | null; benefit_text: string }
+}) {
+  if (item.coupon_type === 'CASH') {
+    return (
+      <div className="coupon-card__amount">
+        <span className="coupon-card__symbol">¥</span>
+        <span className="coupon-card__value">{Number(item.face_value ?? 0)}</span>
+      </div>
+    )
+  }
+  const match = /([\d.]+)\s*折/.exec(item.benefit_text)
+  return (
+    <div className="coupon-card__amount">
+      <span className="coupon-card__value">{match ? match[1] : '—'}</span>
+      <span className="coupon-card__symbol">折</span>
+    </div>
+  )
 }
 
 export default function CouponsPage() {
@@ -113,14 +145,16 @@ export default function CouponsPage() {
                 <Card className="coupon-card" size="small" hoverable>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
                     <div style={{ minWidth: 0 }}>
-                      <div className="coupon-card__amount">
-                        <span className="coupon-card__symbol">¥</span>
-                        <span className="coupon-card__value">{Number(r.face_value)}</span>
-                      </div>
+                      <Benefit item={r} />
                       <Typography.Text strong ellipsis style={{ display: 'block', marginTop: 2 }}>
                         {r.campaign_name}
                       </Typography.Text>
-                      <Tag style={{ marginTop: 6 }}>{CATEGORY_LABEL[r.category]}</Tag>
+                      <Space size={4} style={{ marginTop: 6 }}>
+                        <Tag>{CATEGORY_LABEL[r.category]}</Tag>
+                        <Tag color={r.coupon_type === 'CASH' ? 'volcano' : 'geekblue'}>
+                          {COUPON_TYPE_LABEL[r.coupon_type]}
+                        </Tag>
+                      </Space>
                     </div>
                     <Button
                       type="primary"
@@ -130,10 +164,13 @@ export default function CouponsPage() {
                       立即领取
                     </Button>
                   </div>
+                  <Typography.Text strong style={{ display: 'block', marginTop: 10, fontSize: 13 }}>
+                    {r.benefit_text}
+                  </Typography.Text>
                   <Typography.Paragraph
                     type="secondary"
                     ellipsis={{ rows: 2 }}
-                    style={{ margin: '12px 0 0', fontSize: 12.5, minHeight: 38 }}
+                    style={{ margin: '6px 0 0', fontSize: 12.5, minHeight: 38 }}
                   >
                     {r.reason}
                   </Typography.Paragraph>
@@ -174,12 +211,12 @@ export default function CouponsPage() {
                   <Card className="coupon-card" size="small">
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
                       <div style={{ minWidth: 0 }}>
-                        <div className="coupon-card__amount">
-                          <span className="coupon-card__symbol">¥</span>
-                          <span className="coupon-card__value">{Number(c.face_value)}</span>
-                        </div>
+                        <Benefit item={c} />
                         <Typography.Text strong ellipsis style={{ display: 'block', marginTop: 2 }}>
                           {c.name}
+                        </Typography.Text>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          {c.benefit_text}
                         </Typography.Text>
                       </div>
                       <Button
@@ -193,6 +230,9 @@ export default function CouponsPage() {
                     </div>
                     <Space size={6} wrap style={{ marginTop: 12 }}>
                       <Tag>{CATEGORY_LABEL[c.category]}</Tag>
+                      <Tag color={c.coupon_type === 'CASH' ? 'volcano' : 'geekblue'}>
+                        {COUPON_TYPE_LABEL[c.coupon_type]}
+                      </Tag>
                       <Tag color="orange">{minutesLabel(c.validity_minutes)}</Tag>
                     </Space>
                     <div style={{ marginTop: 10 }}>
@@ -219,7 +259,7 @@ export default function CouponsPage() {
           <Result
             status="success"
             title="领取成功"
-            subTitle={`${claimed.coupon.campaign_name} · 面额 ¥${Number(claimed.coupon.face_value)}`}
+            subTitle={`${claimed.coupon.campaign_name} · ${claimed.coupon.benefit_text}`}
             extra={[
               <div key="code" style={{ marginBottom: 16 }}>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>

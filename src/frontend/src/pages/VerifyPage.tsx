@@ -2,6 +2,7 @@
  * 券码核销台。
  *
  * 两步操作（查验 → 确认核销）：核销不可逆，门店场景下需先确认券有效再执行。
+ * 引入券型后必须录入订单金额：没有它既无法判断使用门槛，也无法算折扣券的优惠额。
  */
 
 import {
@@ -10,6 +11,7 @@ import {
   Col,
   Descriptions,
   Input,
+  InputNumber,
   Result,
   Row,
   Statistic,
@@ -18,7 +20,7 @@ import {
 } from 'antd'
 import { useState } from 'react'
 import { ApiError, api } from '../api/client'
-import { ERROR_MESSAGE } from '../api/types'
+import { COUPON_TYPE_LABEL, ERROR_MESSAGE } from '../api/types'
 import type { RedeemCheck, RedeemResult } from '../api/types'
 import { PageHeader } from '../components/PageHeader'
 
@@ -32,15 +34,19 @@ const CLEAN = /[^23456789ABCDEFGHJKMNPQRSTVWXYZ]/g
 
 export default function VerifyPage() {
   const [code, setCode] = useState('')
+  const [amount, setAmount] = useState<number | null>(null)
   const [check, setCheck] = useState<RedeemCheck | null>(null)
   const [outcome, setOutcome] = useState<Outcome | null>(null)
   const [busy, setBusy] = useState(false)
-  const [today, setToday] = useState(0)
+  const [stats, setStats] = useState({ count: 0, discount: 0 })
 
-  const reset = (clearCode = false) => {
+  const reset = (clearInput = false) => {
     setCheck(null)
     setOutcome(null)
-    if (clearCode) setCode('')
+    if (clearInput) {
+      setCode('')
+      setAmount(null)
+    }
   }
 
   const doCheck = async () => {
@@ -57,18 +63,26 @@ export default function VerifyPage() {
   }
 
   const doRedeem = async () => {
+    if (amount === null) return
     setBusy(true)
     try {
-      const data = await api.post<RedeemResult>('/api/redemptions', { code })
+      const data = await api.post<RedeemResult>('/api/redemptions', {
+        code,
+        order_amount: String(amount),
+      })
       setOutcome({ kind: 'success', data })
       setCheck(null)
-      setToday((n) => n + 1)
+      setStats((s) => ({
+        count: s.count + 1,
+        discount: s.discount + Number(data.discount_amount),
+      }))
     } catch (e) {
       const err = e as ApiError
       setOutcome({
         kind: err.code === 'COUPON_NOT_FOUND' ? 'error' : 'warning',
         code: err.code,
-        text: ERROR_MESSAGE[err.code] ?? err.message,
+        // 未达门槛时后端会给出具体门槛金额，比通用文案更有用
+        text: err.code === 'ORDER_AMOUNT_BELOW_THRESHOLD' ? err.message : ERROR_MESSAGE[err.code] ?? err.message,
       })
       setCheck(null)
     } finally {
@@ -76,12 +90,29 @@ export default function VerifyPage() {
     }
   }
 
+  const threshold = check ? Number(check.min_order_amount) : 0
+  const amountOk = amount !== null && amount > 0 && amount >= threshold
+
   return (
     <>
       <PageHeader
         title="券码核销"
-        description="录入顾客出示的券码，确认无误后完成核销"
-        extra={<Statistic title="本次登录已核销" value={today} suffix="张" />}
+        description="录入顾客出示的券码与本单金额，确认无误后完成核销"
+        extra={
+          <Row gutter={24}>
+            <Col>
+              <Statistic title="本次登录已核销" value={stats.count} suffix="张" />
+            </Col>
+            <Col>
+              <Statistic
+                title="累计优惠"
+                value={stats.discount}
+                precision={2}
+                prefix="¥"
+              />
+            </Col>
+          </Row>
+        }
       />
 
       <Row gutter={16}>
@@ -134,27 +165,61 @@ export default function VerifyPage() {
           {check && (
             <Card
               title="券码信息"
-              extra={<Tag color={check.redeemable ? 'green' : 'default'}>{check.display_status}</Tag>}
+              extra={
+                <Tag color={check.redeemable ? 'green' : 'default'}>{check.display_status}</Tag>
+              }
             >
               <Descriptions column={1} size="small" bordered>
                 <Descriptions.Item label="优惠活动">{check.campaign_name}</Descriptions.Item>
-                <Descriptions.Item label="面额">
-                  <Typography.Text strong>¥{Number(check.face_value)}</Typography.Text>
+                <Descriptions.Item label="券型">
+                  <Tag color={check.coupon_type === 'CASH' ? 'volcano' : 'geekblue'}>
+                    {COUPON_TYPE_LABEL[check.coupon_type]}
+                  </Tag>
+                </Descriptions.Item>
+                <Descriptions.Item label="优惠内容">
+                  <Typography.Text strong>{check.benefit_text}</Typography.Text>
                 </Descriptions.Item>
                 <Descriptions.Item label="持有会员">{check.owner}</Descriptions.Item>
               </Descriptions>
+
               {check.redeemable ? (
-                <Button
-                  type="primary"
-                  danger
-                  size="large"
-                  block
-                  style={{ marginTop: 16 }}
-                  onClick={doRedeem}
-                  loading={busy}
-                >
-                  确认核销
-                </Button>
+                <>
+                  <div style={{ marginTop: 16 }}>
+                    <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                      本单金额（元）
+                    </Typography.Text>
+                    <InputNumber
+                      size="large"
+                      min={0.01}
+                      precision={2}
+                      value={amount}
+                      onChange={setAmount}
+                      style={{ width: '100%', marginTop: 6 }}
+                      placeholder="请输入本单实付前金额"
+                      onPressEnter={() => amountOk && doRedeem()}
+                    />
+                    {threshold > 0 && (
+                      <Typography.Text
+                        type={amount !== null && amount < threshold ? 'danger' : 'secondary'}
+                        style={{ fontSize: 12 }}
+                      >
+                        该券需满 {threshold} 元可用
+                      </Typography.Text>
+                    )}
+                  </div>
+                  <Button
+                    type="primary"
+                    danger
+                    size="large"
+                    block
+                    style={{ marginTop: 16 }}
+                    onClick={doRedeem}
+                    loading={busy}
+                    disabled={!amountOk}
+                  >
+                    确认核销
+                  </Button>
+                </>
               ) : (
                 <Typography.Paragraph type="danger" style={{ marginTop: 16, marginBottom: 0 }}>
                   该券不可核销：{check.reason}
@@ -171,8 +236,11 @@ export default function VerifyPage() {
                   title="核销成功"
                   subTitle={
                     <>
-                      面额 ¥{Number(outcome.data.face_value)} · 操作人 {outcome.data.used_by}
+                      本单 ¥{Number(outcome.data.order_amount)} · 优惠 ¥
+                      {Number(outcome.data.discount_amount)} · 应付 ¥
+                      {Number(outcome.data.payable_amount)}
                       <br />
+                      {outcome.data.store_name} · {outcome.data.used_by} ·{' '}
                       {new Date(outcome.data.used_at).toLocaleString('zh-CN')}
                     </>
                   }
@@ -186,9 +254,7 @@ export default function VerifyPage() {
                 <Result
                   status={outcome.kind}
                   title={outcome.text}
-                  extra={
-                    <Button onClick={() => reset(true)}>重新录入</Button>
-                  }
+                  extra={<Button onClick={() => reset(true)}>重新录入</Button>}
                 />
               )}
             </Card>
@@ -197,7 +263,7 @@ export default function VerifyPage() {
           {!check && !outcome && (
             <Card style={{ background: '#fafbfc', borderStyle: 'dashed' }}>
               <Typography.Paragraph type="secondary" style={{ margin: 0, fontSize: 13 }}>
-                录入券码后将显示优惠活动、面额与持有会员信息，确认后再执行核销。
+                录入券码后将显示券型、优惠内容与使用门槛，再填写本单金额即可核销。
               </Typography.Paragraph>
             </Card>
           )}

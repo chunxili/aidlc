@@ -1,6 +1,7 @@
 import { Badge, Card, Empty, Segmented, Table, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { COUPON_TYPE_LABEL } from '../api/types'
 import type { Coupon, Paged } from '../api/types'
 import { PageHeader } from '../components/PageHeader'
 
@@ -130,12 +131,21 @@ export default function MyCouponsPage() {
             },
             { title: '优惠活动', dataIndex: 'campaign_name', ellipsis: true },
             {
-              title: '面额',
-              dataIndex: 'face_value',
-              width: 100,
-              align: 'right',
-              render: (v: string) => (
-                <Typography.Text strong>¥{Number(v)}</Typography.Text>
+              title: '优惠内容',
+              dataIndex: 'benefit_text',
+              width: 200,
+              render: (v: string, r) => (
+                <div>
+                  <Typography.Text strong>{v}</Typography.Text>
+                  <div>
+                    <Tag
+                      color={r.coupon_type === 'CASH' ? 'volcano' : 'geekblue'}
+                      style={{ marginTop: 2 }}
+                    >
+                      {COUPON_TYPE_LABEL[r.coupon_type]}
+                    </Tag>
+                  </div>
+                </div>
               ),
             },
             {

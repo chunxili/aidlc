@@ -1,14 +1,30 @@
 /** 后端契约类型。以 .aidlc/design/api-specification.md 为准。 */
 
 export type Role = 'OPERATOR' | 'USER' | 'VERIFIER' | 'ADMIN'
+export type RegisterRole = 'USER' | 'VERIFIER' | 'OPERATOR'
 export type Category = 'FOOD' | 'TRAVEL' | 'SHOPPING' | 'LIFE'
 export type CampaignStatus = 'PENDING' | 'ACTIVE' | 'ENDED'
+export type CouponType = 'CASH' | 'DISCOUNT'
+export type AccountStatus = 'ACTIVE' | 'PENDING' | 'REJECTED'
+
+export interface Store {
+  id: number
+  code: string
+  name: string
+  district: string
+  address: string
+}
 
 export interface User {
   id: number
   username: string
   display_name: string
   role: Role
+  status: AccountStatus
+  phone: string | null
+  store_id: number | null
+  store_name: string | null
+  reject_reason: string | null
 }
 
 export interface LoginResult {
@@ -17,11 +33,48 @@ export interface LoginResult {
   user: User
 }
 
+export interface RegisterResult {
+  user: User
+  needs_approval: boolean
+}
+
+export interface PendingUser {
+  id: number
+  username: string
+  display_name: string
+  role: Role
+  phone: string | null
+  store_id: number | null
+  store_name: string | null
+  store_district: string | null
+  created_at: string
+}
+
+export interface Verifier {
+  id: number
+  username: string
+  display_name: string
+  phone: string | null
+  status: AccountStatus
+  store_id: number
+  store_code: string
+  store_name: string
+  store_district: string
+  redeemed_count: number
+  created_at: string
+}
+
 export interface Campaign {
   id: number
   name: string
   category: Category
-  face_value: string
+  coupon_type: CouponType
+  face_value: string | null
+  min_order_amount: string
+  discount_percent: number | null
+  max_discount_amount: string | null
+  /** 优惠描述由后端统一生成，前端直接展示，避免两端各拼一套文案 */
+  benefit_text: string
   total_stock: number
   claimed_count: number
   remaining_stock: number
@@ -36,7 +89,12 @@ export interface AvailableCampaign {
   id: number
   name: string
   category: Category
-  face_value: string
+  coupon_type: CouponType
+  face_value: string | null
+  min_order_amount: string
+  discount_percent: number | null
+  max_discount_amount: string | null
+  benefit_text: string
   remaining_stock: number
   end_at: string
   validity_minutes: number
@@ -49,9 +107,12 @@ export interface Coupon {
   code: string
   campaign_id: number
   campaign_name: string
-  face_value: string
+  coupon_type: CouponType
+  face_value: string | null
+  min_order_amount: string
+  benefit_text: string
   status: 'UNUSED' | 'USED'
-  /** 派生值：可用 / 已核销 / 已过期。"已过期"不落库（ADR-002） */
+  /** 派生值：可用 / 已核销 / 已过期。"已过期"不落库 */
   display_status: '可用' | '已核销' | '已过期'
   seq: number
   claimed_at: string
@@ -80,7 +141,9 @@ export interface Recommendation {
   campaign_id: number
   campaign_name: string
   category: Category
-  face_value: string
+  coupon_type: CouponType
+  face_value: string | null
+  benefit_text: string
   remaining_stock: number
   reason: string
 }
@@ -95,7 +158,12 @@ export interface RecommendationResult {
 export interface RedeemCheck {
   code: string
   campaign_name: string
-  face_value: string
+  coupon_type: CouponType
+  benefit_text: string
+  face_value: string | null
+  min_order_amount: string
+  discount_percent: number | null
+  max_discount_amount: string | null
   display_status: string
   owner: string
   redeemable: boolean
@@ -104,9 +172,13 @@ export interface RedeemCheck {
 
 export interface RedeemResult {
   code: string
-  face_value: string
+  benefit_text: string
+  order_amount: string
+  discount_amount: string
+  payable_amount: string
   used_at: string
   used_by: string
+  store_name: string | null
 }
 
 export interface RiskEvent {
@@ -119,7 +191,6 @@ export interface RiskEvent {
   decision: 'PASS' | 'BLOCK' | 'MANUAL_REVIEW'
   decided_by: 'RULE' | 'AI'
   degraded: boolean
-  /** 判定理由。运营看不到理由就无从审核（FR-052 AC-2） */
   ai_reason: string
   status: 'PENDING' | 'RELEASED' | 'KEPT'
   handled_by: string | null
@@ -137,9 +208,7 @@ export interface CampaignStats {
   active_count: number
   expired_count: number
   claim_rate: number
-  /** claimed_count=0 时为 null，界面显示「—」 */
   redeem_rate: number | null
-  /** 口径说明由后端下发，前端不硬编码，避免口径漂移 */
   claim_rate_basis: string
   redeem_rate_basis: string
 }
@@ -168,21 +237,31 @@ export const CATEGORY_LABEL: Record<Category, string> = {
 
 export const ROLE_LABEL: Record<Role, string> = {
   OPERATOR: '运营人员',
-  USER: '普通用户',
+  USER: '会员',
   VERIFIER: '核销人员',
   ADMIN: '管理员',
 }
 
-/** 错误码 → 用户文案。按 code 分支（frontend-design.md 第五节） */
+export const COUPON_TYPE_LABEL: Record<CouponType, string> = {
+  CASH: '满减券',
+  DISCOUNT: '折扣券',
+}
+
+/** 错误码 → 用户文案。按 code 分支，文案可调整而 code 是契约 */
 export const ERROR_MESSAGE: Record<string, string> = {
   OUT_OF_STOCK: '库存不足',
   PER_USER_LIMIT_REACHED: '已达领取上限',
   CAMPAIGN_NOT_ACTIVE: '活动未开始或已结束',
-  COUPON_ALREADY_USED: '已核销',
-  COUPON_EXPIRED: '券已过期',
-  COUPON_NOT_FOUND: '券不存在',
-  RISK_BLOCKED: '操作过于频繁，已被风控拦截',
-  RISK_MANUAL_REVIEW: '账号存在异常，需人工审核，审核通过后请重新领取',
-  STOCK_CANNOT_DECREASE: '库存只能调高',
+  COUPON_ALREADY_USED: '该券已核销',
+  COUPON_EXPIRED: '该券已过期',
+  COUPON_NOT_FOUND: '券码不存在',
+  ORDER_AMOUNT_BELOW_THRESHOLD: '订单金额未达使用门槛',
+  RISK_BLOCKED: '操作过于频繁，请稍后再试',
+  RISK_MANUAL_REVIEW: '账号存在异常，需人工审核后方可领取',
+  STOCK_CANNOT_DECREASE: '库存只能追加',
+  USERNAME_TAKEN: '该账号已被使用',
+  STORE_NOT_FOUND: '门店不存在',
+  ACCOUNT_PENDING_APPROVAL: '账号正在审核中',
+  ACCOUNT_REJECTED: '账号申请未通过',
   FORBIDDEN: '无权访问该资源',
 }

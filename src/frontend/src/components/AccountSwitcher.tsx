@@ -8,14 +8,19 @@
 import { Avatar, List, Modal, Tag, Typography, App as AntApp } from 'antd'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { DEFAULT_ROUTE, useAuth } from '../auth/AuthContext'
+import { landingFor, useAuth } from '../auth/AuthContext'
 import { ROLE_LABEL } from '../api/types'
 import type { Role } from '../api/types'
 
+/** 初始账号的统一口令，与后端 seed 保持一致 */
+const SHARED_PASSWORD = 'Coupon@2026'
+
 const ACCOUNTS: { username: string; name: string; role: Role; dept: string }[] = [
-  { username: 'op001', name: '李彦', role: 'OPERATOR', dept: '市场营销部' },
-  { username: 'verifier001', name: '王磊', role: 'VERIFIER', dept: '门店运营部' },
   { username: 'admin001', name: '张岚', role: 'ADMIN', dept: '数据与风控部' },
+  { username: 'op001', name: '李彦', role: 'OPERATOR', dept: '市场营销部' },
+  { username: 'verifier001', name: '王磊', role: 'VERIFIER', dept: '天河体育中心店' },
+  { username: 'verifier002', name: '赵敏', role: 'VERIFIER', dept: '北京路店' },
+  { username: 'verifier003', name: '何俊', role: 'VERIFIER', dept: '番禺市桥店' },
   { username: 'user_a', name: '陈嘉', role: 'USER', dept: '会员' },
   { username: 'user_b', name: '周宁', role: 'USER', dept: '会员' },
   { username: 'user_c', name: '孙涛', role: 'USER', dept: '会员' },
@@ -41,10 +46,10 @@ export function AccountSwitcher({ open, onClose }: { open: boolean; onClose: () 
     }
     setBusy(username)
     try {
-      const next = await login(username)
+      const next = await login(username, SHARED_PASSWORD)
       message.success(`已切换至 ${next.display_name}`)
       onClose()
-      navigate(DEFAULT_ROUTE[next.role], { replace: true })
+      navigate(landingFor(next), { replace: true })
     } catch {
       message.error('切换失败，请重试')
     } finally {

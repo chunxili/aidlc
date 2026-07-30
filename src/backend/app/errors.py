@@ -74,3 +74,18 @@ def risk_manual_review() -> BusinessError:
 def code_generation_failed() -> BusinessError:
     # 不得静默降级为可预测券码（ADR-010 是安全约束）
     return BusinessError(500, "INTERNAL_ERROR", "券码生成失败，请重试")
+
+
+# ---- 产品化改造新增（CR-001）----
+def order_amount_below_threshold(threshold) -> BusinessError:
+    return BusinessError(
+        409, "ORDER_AMOUNT_BELOW_THRESHOLD", f"订单金额未达使用门槛（需满 {threshold} 元）"
+    )
+
+
+def username_taken() -> BusinessError:
+    return BusinessError(409, "USERNAME_TAKEN", "该账号已被使用")
+
+
+def store_not_found() -> BusinessError:
+    return BusinessError(404, "STORE_NOT_FOUND", "门店不存在")

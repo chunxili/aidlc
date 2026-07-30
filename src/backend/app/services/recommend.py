@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..models import Campaign, UserCoupon
 from ..schemas import RecommendationItem, RecommendationOut
-from . import bedrock
+from . import bedrock, pricing
 from .campaign import list_available_for_user
 
 PROMPT_VERSION = "recommend-v1"
@@ -65,9 +65,10 @@ def _popularity(db: Session, campaign_ids: list[int]) -> dict[int, float]:
 
 def _template_reason(c: Campaign, cold_start: bool) -> str:
     label = CATEGORY_LABEL.get(c.category, c.category)
+    benefit = pricing.describe(c)
     if cold_start:
-        return f"新用户推荐：{label}类高性价比券，面额 {c.face_value} 元，先领先用"
-    return f"{label}类热门券，面额 {c.face_value} 元，当前剩余 {c.total_stock - c.claimed_count} 张"
+        return f"新会员推荐：{label}类{benefit}，先领先用"
+    return f"{label}类热门券，{benefit}，当前剩余 {c.total_stock - c.claimed_count} 张"
 
 
 def recommend(db: Session, user_id: int, limit: int | None = None) -> RecommendationOut:
@@ -103,7 +104,9 @@ def recommend(db: Session, user_id: int, limit: int | None = None) -> Recommenda
                 campaign_id=cid,
                 campaign_name=by_id[cid].name,
                 category=by_id[cid].category,
+                coupon_type=by_id[cid].coupon_type,
                 face_value=by_id[cid].face_value,
+                benefit_text=pricing.describe(by_id[cid]),
                 remaining_stock=by_id[cid].total_stock - by_id[cid].claimed_count,
                 reason=it.get("reason") or _template_reason(by_id[cid], cold_start),
             )
@@ -129,7 +132,9 @@ def recommend(db: Session, user_id: int, limit: int | None = None) -> Recommenda
                 campaign_id=c.id,
                 campaign_name=c.name,
                 category=c.category,
+                coupon_type=c.coupon_type,
                 face_value=c.face_value,
+                benefit_text=pricing.describe(c),
                 remaining_stock=c.total_stock - c.claimed_count,
                 reason=_template_reason(c, cold_start),
             )
