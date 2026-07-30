@@ -18,6 +18,17 @@ from app.main import app
 from app.seed import DEFAULT_PASSWORD, seed_stores, seed_users
 
 
+# 注册类用例为保证可重复运行，账号名都带随机十六进制后缀（pending_ddd6dd09）。
+# 它们跑完就是库里的垃圾，还会带着「待审OPERATOR」这类占位姓名出现在管理员的审核
+# 队列里，让演示环境看起来像半成品。会话结束时按账号名形态清掉自己造的账号。
+#
+# 判定依据是形态而非创建时间：形如 <前缀>_<8位十六进制> 的账号只可能由测试生成，
+# 种子账号（op001/verifier001/user001）与真人注册都不会产出这种名字。
+# 前缀允许下划线，否则 v_ok_8f2804ef 这类多段前缀会漏网。
+# scripts/cleanup_test_accounts.py 用同一形态做手工清理，两处须保持一致。
+TEST_ACCOUNT_PATTERN = r"^[a-z][a-z0-9_]*_[0-9a-f]{8}$"
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _seed_once():
     db = SessionLocal()
@@ -26,6 +37,34 @@ def _seed_once():
         seed_stores(db)
         # 测试只需少量批量用户；并发验收脚本另行使用完整 seed。
         seed_users(db, normal_user_count=210)
+    finally:
+        db.close()
+
+    yield
+
+    db = SessionLocal()
+    try:
+        ids = [
+            r[0]
+            for r in db.execute(
+                text("SELECT id FROM users WHERE username ~ :pat"), {"pat": TEST_ACCOUNT_PATTERN}
+            ).all()
+        ]
+        if ids:
+            # 按外键顺序清：最后一个用例的业务数据可能仍引用这些账号
+            db.execute(text("UPDATE users SET reviewed_by = NULL WHERE reviewed_by = ANY(:ids)"), {"ids": ids})
+            db.execute(text("DELETE FROM risk_events WHERE user_id = ANY(:ids) OR handled_by = ANY(:ids)"), {"ids": ids})
+            db.execute(text("UPDATE ai_invocations SET user_id = NULL WHERE user_id = ANY(:ids)"), {"ids": ids})
+            db.execute(
+                text(
+                    "DELETE FROM user_coupons WHERE user_id = ANY(:ids) OR used_by = ANY(:ids)"
+                    " OR campaign_id IN (SELECT id FROM campaigns WHERE created_by = ANY(:ids))"
+                ),
+                {"ids": ids},
+            )
+            db.execute(text("DELETE FROM campaigns WHERE created_by = ANY(:ids)"), {"ids": ids})
+            db.execute(text("DELETE FROM users WHERE id = ANY(:ids)"), {"ids": ids})
+            db.commit()
     finally:
         db.close()
 

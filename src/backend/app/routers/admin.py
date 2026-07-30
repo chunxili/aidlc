@@ -7,9 +7,17 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import User
-from ..schemas import PendingUserOut, ReviewIn, VerifierOut
+from ..schemas import (
+    OperatorCampaignsOut,
+    OperatorOut,
+    PendingUserOut,
+    ReviewIn,
+    VerifierOut,
+    VerifierRedemptionsOut,
+)
 from ..security import require_admin
 from ..services import account as svc
+from ..services import admin_console as console
 
 router = APIRouter(prefix="/api/admin", tags=["管理"])
 
@@ -84,3 +92,39 @@ def verifiers(
         )
         for u, s, cnt in svc.list_verifiers(db, district, store_id)
     ]
+
+
+@router.get("/verifiers/{user_id}/redemptions", response_model=VerifierRedemptionsOut)
+def verifier_redemptions(
+    user_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=console.MAX_PAGE_SIZE),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> VerifierRedemptionsOut:
+    """某核销人员的全部核销记录，按核销时间倒序（FR-070）。"""
+    brief, items, total, page_no, size = console.verifier_redemptions(db, user_id, page, page_size)
+    return VerifierRedemptionsOut(
+        verifier=brief, items=items, total=total, page=page_no, page_size=size
+    )
+
+
+@router.get("/operators", response_model=list[OperatorOut])
+def operators(db: Session = Depends(get_db), _: User = Depends(require_admin)) -> list[OperatorOut]:
+    """全部运营人员名册，含发布活动数与投放业绩（FR-069）。"""
+    return console.list_operators(db)
+
+
+@router.get("/operators/{user_id}/campaigns", response_model=OperatorCampaignsOut)
+def operator_campaigns(
+    user_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=console.MAX_PAGE_SIZE),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> OperatorCampaignsOut:
+    """某运营人员发布的全部活动，按创建时间倒序（FR-071）。"""
+    brief, items, total, page_no, size = console.operator_campaigns(db, user_id, page, page_size)
+    return OperatorCampaignsOut(
+        operator=brief, items=items, total=total, page=page_no, page_size=size
+    )

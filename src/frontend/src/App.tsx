@@ -21,6 +21,7 @@ import RiskPage from './pages/RiskPage'
 import StatsPage from './pages/StatsPage'
 import RegistrationsPage from './pages/RegistrationsPage'
 import VerifiersPage from './pages/VerifiersPage'
+import OperatorsPage from './pages/OperatorsPage'
 
 const PUBLIC_ROUTES = ['/login', '/register']
 
@@ -42,10 +43,11 @@ const NAV: NavItem[] = [
     key: '/admin/registrations',
     label: '注册审核',
     roles: ['ADMIN'],
-    group: '管理',
+    group: '权限审批与管理',
     badge: 'registrations',
   },
-  { key: '/admin/verifiers', label: '核销人员', roles: ['ADMIN'], group: '管理' },
+  { key: '/admin/verifiers', label: '核销人员', roles: ['ADMIN'], group: '权限审批与管理' },
+  { key: '/admin/operators', label: '运营人员', roles: ['ADMIN'], group: '权限审批与管理' },
   { key: '/stats', label: '数据看板', roles: ['ADMIN', 'OPERATOR'], group: '数据' },
 ]
 
@@ -262,6 +264,14 @@ export default function App() {
                 element={
                   <RequireRole roles={['ADMIN']}>
                     <VerifiersPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="/admin/operators"
+                element={
+                  <RequireRole roles={['ADMIN']}>
+                    <OperatorsPage />
                   </RequireRole>
                 }
               />

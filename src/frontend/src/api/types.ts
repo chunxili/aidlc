@@ -64,6 +64,85 @@ export interface Verifier {
   created_at: string
 }
 
+/** 运营人员名册行（FR-069）。列的是投放业绩，不是账号资料 */
+export interface Operator {
+  id: number
+  username: string
+  display_name: string
+  phone: string | null
+  status: AccountStatus
+  campaign_count: number
+  total_stock: number
+  claimed_count: number
+  used_count: number
+  /** 分母为 0 时为 null：无人领取与领了没人用是两回事，用 0 表示前者会误导复盘 */
+  redeem_rate: number | null
+  created_at: string
+}
+
+export interface VerifierBrief {
+  id: number
+  username: string
+  display_name: string
+  phone: string | null
+  store_name: string
+  store_district: string
+}
+
+/** 核销记录行（FR-070）。金额取核销时落库的快照，非活动现值重算 */
+export interface RedemptionRecord {
+  id: number
+  code: string
+  campaign_name: string
+  coupon_type: CouponType
+  benefit_text: string
+  order_amount: string | null
+  discount_amount: string | null
+  payable_amount: string | null
+  used_at: string
+  store_name: string | null
+}
+
+export interface VerifierRedemptions {
+  verifier: VerifierBrief
+  items: RedemptionRecord[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface OperatorBrief {
+  id: number
+  username: string
+  display_name: string
+  phone: string | null
+  status: AccountStatus
+}
+
+/** 运营发布的活动行（FR-071）。界面称「发布的券」，数据粒度是活动 */
+export interface OperatorCampaign {
+  id: number
+  name: string
+  category: Category
+  coupon_type: CouponType
+  benefit_text: string
+  total_stock: number
+  claimed_count: number
+  used_count: number
+  remaining_stock: number
+  status: CampaignStatus
+  start_at: string
+  end_at: string
+}
+
+export interface OperatorCampaigns {
+  operator: OperatorBrief
+  items: OperatorCampaign[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export interface Campaign {
   id: number
   name: string

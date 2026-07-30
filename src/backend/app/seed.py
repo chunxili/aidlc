@@ -28,12 +28,28 @@ DEFAULT_PASSWORD = "Coupon@2026"
 NAMED_USERS: list[tuple[str, str, str, str, str | None]] = [
     ("admin001", "张岚", "ADMIN", "13800000001", None),
     ("op001", "李彦", "OPERATOR", "13800000002", None),
+    ("op002", "林薇", "OPERATOR", "13800000012", None),
+    ("op003", "郭铭", "OPERATOR", "13800000013", None),
     ("verifier001", "王磊", "VERIFIER", "13800000003", "GZ-TH-001"),
     ("verifier002", "赵敏", "VERIFIER", "13800000004", "GZ-YX-001"),
     ("verifier003", "何俊", "VERIFIER", "13800000005", "GZ-PY-001"),
+    ("verifier004", "曾丽", "VERIFIER", "13800000006", "GZ-TH-002"),
+    ("verifier005", "邓超", "VERIFIER", "13800000007", "GZ-HZ-001"),
+    ("verifier006", "梁悦", "VERIFIER", "13800000008", "GZ-LW-001"),
     ("user_a", "陈嘉", "USER", "13900000001", None),
     ("user_b", "周宁", "USER", "13900000002", None),
     ("user_c", "孙涛", "USER", "13900000003", None),
+]
+
+# 待管理员审核的注册申请（CR-002 / D-CR002-1）。
+# 审核队列在演示时不能是空的：管理员后台的第一屏就是审核，空列表让人无从判断功能是否可用。
+# 用具名中文申请人，而非验收脚本生成的 operator_82215d20「待审OPERATOR」这类占位数据。
+PENDING_APPLICANTS: list[tuple[str, str, str, str, str | None]] = [
+    ("verifier101", "许静", "VERIFIER", "13700000001", "GZ-BY-001"),
+    ("verifier102", "冯凯", "VERIFIER", "13700000002", "GZ-HZ-002"),
+    ("verifier103", "苏珊", "VERIFIER", "13700000003", "GZ-NS-001"),
+    ("op101", "唐宇", "OPERATOR", "13700000011", None),
+    ("op102", "钟晴", "OPERATOR", "13700000012", None),
 ]
 
 _UPSERT_STORE = text(
@@ -46,9 +62,12 @@ _UPSERT_STORE = text(
 # display_name 与 password_hash 用 DO UPDATE 而非 DO NOTHING：既保持幂等，
 # 又能在改动展示名或重置初始口令后让已存在的账号同步更新，
 # 避免库里残留旧的占位名或空口令（空口令账号将无法登录）。
+#
+# status 刻意**不**进 DO UPDATE 的更新列：种子申请人一旦被管理员审批过，
+# 重启服务不得把它拽回 PENDING —— 那会让演示中刚做完的审批凭空消失。
 _UPSERT_USER = text(
     "INSERT INTO users(username, display_name, role, password_hash, status, phone, store_id)"
-    " VALUES (:username, :display_name, :role, :password_hash, 'ACTIVE', :phone,"
+    " VALUES (:username, :display_name, :role, :password_hash, :status, :phone,"
     "         (SELECT id FROM stores WHERE code = :store_code))"
     " ON CONFLICT (username) DO UPDATE"
     " SET display_name = EXCLUDED.display_name,"
@@ -83,6 +102,21 @@ def seed_users(db: Session, normal_user_count: int | None = None) -> dict[str, i
                 "display_name": display_name,
                 "role": role,
                 "password_hash": shared_hash,
+                "status": "ACTIVE",
+                "phone": phone,
+                "store_code": store_code,
+            },
+        )
+
+    for username, display_name, role, phone, store_code in PENDING_APPLICANTS:
+        db.execute(
+            _UPSERT_USER,
+            {
+                "username": username,
+                "display_name": display_name,
+                "role": role,
+                "password_hash": shared_hash,
+                "status": "PENDING",
                 "phone": phone,
                 "store_code": store_code,
             },
@@ -94,6 +128,7 @@ def seed_users(db: Session, normal_user_count: int | None = None) -> dict[str, i
             "display_name": f"会员{i:03d}",
             "role": "USER",
             "password_hash": shared_hash,
+            "status": "ACTIVE",
             "phone": None,
             "store_code": None,
         }

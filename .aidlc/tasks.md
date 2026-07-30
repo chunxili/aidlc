@@ -1119,3 +1119,137 @@ docker compose up -d && start http://localhost:5173
 | Bedrock 短期 key 12 小时过期 | 换值重启即生效；降级路径已验证，过期不影响演示完整性 |
 | ASM-002 团队语言 | 用户始终未答；业务规则集中于 `services/`，必要时可按设计文档移植 |
 | 第五步测试计划 | 未建 `test-plan.md`；验证以任务 AC 为单位执行，证据记于本文件各任务的实现记录中 |
+
+---
+
+# 变更任务 CR-001：产品化改造
+
+对应 `plan/req-plan.md` 的 CR-001 与 `plan/design-plan.md` 的 ADR-011 ~ ADR-015。
+
+## T-15 ~ T-22（合并为一次交付，提交 `78a1fab`）
+
+- [x] 已完成（2026-07-29）
+
+**交付内容**：口令体系（scrypt）、账号状态机与注册审核、广州 22 家门店主数据、满减券与折扣券两种券型、核销引入订单金额、管理员审核队列与核销人员名册、前端注册页/审核进度页/管理员后台/券型表单/核销台金额录入、迁移 `0002_product`。
+
+**验证结果**：`pytest tests -q` → **214 passed**（原 160 + 新增 54）。`npx tsc --noEmit` 与 `npm run build` 均通过。迁移可升级可回退。
+
+**实现阶段发现并修复的三个真实缺陷**：
+
+| # | 缺陷 | 影响 |
+|---|---|---|
+| 1 | `redeem` 提交后未 `db.expire_all()`，ORM 身份映射返回陈旧对象 | 核销响应的 `used_at` 为 `null`，前端无法显示核销时间 |
+| 2 | `pricing._fmt` 用 `Decimal.normalize()` | 门槛 100 被显示成科学计数法 `1E+2`，而该串直接呈现给用户 |
+| 3 | `test_block_leaves_stock_untouched` 未固定 AI 凭证状态 | 配真实凭证时灰区每次等满 2.5 秒墙钟预算，30 次领取超出 10 秒风控窗口致计数重置，用例随机失败 |
+
+**未验证项**：`scripts/product_check.py` 当时未跑通（8000 端口被 CR-001 之前的旧 uvicorn 进程占用，线上仅 16 条路由，`/api/stores` 返回 404）。该阻塞已在 CR-002 期间解除。
+
+---
+
+# 变更任务 CR-002：管理员人员与业绩管理台
+
+对应 `plan/req-plan.md` 的 CR-002 与 `plan/design-plan.md` 的 ADR-016 ~ ADR-018。
+
+## T-23 运营人员名册与人员下钻
+
+- [x] 已完成（2026-07-29）
+
+**目标**：管理员能看到全部运营人员的投放业绩，并能从任一人员下钻到其明细 —— 核销员看核销记录，运营看发布的活动。
+
+**范围**：`app/services/admin_console.py`、`app/routers/admin.py`、`app/schemas.py`、`tests/test_admin_console.py`、`src/frontend/src/pages/OperatorsPage.tsx`、`VerifiersPage.tsx`、`App.tsx`、`api/types.ts`。
+**不包含**：对人员的任何写操作（停用、改门店、重置口令）—— 本期名册只读（ADR-018 与 Q-024）。
+
+**Depends on**：CR-001 全部
+
+**需求引用**：
+- `.aidlc/plan/req-plan.md` CR-002 变更内容 1 ~ 6
+- FR-069 运营人员名册、FR-070 核销记录下钻、FR-071 运营发布活动下钻
+- D-CR002-1 申请人姓名中文化（数据质量修正）
+
+**设计引用**：
+- `.aidlc/design/api-specification.md` 第十三节（三个新端点的完整契约）
+- `.aidlc/plan/design-plan.md` ADR-016 / ADR-017 / ADR-018
+- `.aidlc/design/frontend-design.md` CR-001 / CR-002 前端增量章节
+
+**实现要点**：
+1. 名册业绩实时聚合，不建汇总表（ADR-016）。
+2. **必须用两个独立的 GROUP BY 子查询**：运营→活动、活动→券都是一对多，放进同一次 join 会让活动行被券行放大，`sum(total_stock)` 按券数重复累加。
+3. `claimed_count` 取 `campaigns` 上的计数器而非再数券行 —— 二者相等由 INV-2 保证。
+4. `redeem_rate` 分母为 0 时返回 `null` 而非 0：「无人领取」与「领了没人用」是两回事。
+5. 下钻金额取 `user_coupons` 的落库快照，不用活动现值重算（ADR-017）。
+6. 下钻内置分页且 `page_size` 有硬上限，一个核销员可能有上万条记录。
+7. 目标 id 不存在与角色不符统一返回 404 `USER_NOT_FOUND`。
+8. 核销人员名册的姓名列只呈现姓名，账号名移入下钻抽屉。
+9. 侧栏分组「管理」改名「权限审批与管理」。
+
+**验收标准**：
+- AC-1 名册列出全部运营（含 `PENDING`/`REJECTED`），不混入其他角色
+- AC-2 无投放时业绩全为 0 且 `redeem_rate` 为 `null`
+- AC-3 发布数、投放量、已领取、已核销、核销率逐项精确
+- AC-4 **行放大回归**：一个活动领 N 张券后 `total_stock` 不得被放大
+- AC-5 运营下钻列出活动，含派生状态与三项计数
+- AC-6 下钻按时间倒序，分页不重不漏
+- AC-7 目标角色不符返回 404
+- AC-8 核销记录的订单金额、优惠、实付取快照且逐项精确
+- AC-9 记录严格按核销员隔离，且与名册 `redeemed_count` 对账一致
+- AC-10 `page_size` 超上限被拒
+- AC-11 三端点对 OPERATOR / VERIFIER / USER 均 403，未登录 401
+- AC-12 审核队列中申请人姓名全为中文具名，无占位数据
+
+**验证命令**：
+```
+cd src/backend && .venv\Scripts\python -m pytest tests/test_admin_console.py -v
+cd src/frontend && npx tsc --noEmit && npm run build
+python scripts/admin_console_check.py
+python scripts/cleanup_test_accounts.py
+```
+
+**交付物**：`app/services/admin_console.py`、`app/routers/admin.py`（+3 路由）、`app/schemas.py`（+7 模型）、`tests/test_admin_console.py`、`scripts/admin_console_check.py`、`scripts/cleanup_test_accounts.py`、`src/frontend/src/pages/OperatorsPage.tsx`、改造后的 `VerifiersPage.tsx`。
+
+### 实现记录（2026-07-29）
+
+**验证结果**：
+
+| 验证 | 命令 | 结果 |
+|---|---|---|
+| 新增用例 | `pytest tests/test_admin_console.py` | 14 passed，一次通过 |
+| 全量回归 | `pytest tests -q` | **228 passed**（原 214 + 14） |
+| 前端类型与构建 | `npx tsc --noEmit` / `npm run build` | 通过，1491 模块 |
+| 端到端验收 | `scripts/admin_console_check.py` | **7 组 40+ 断言全部 PASS** |
+| 线上路由 | `GET /openapi.json` | 25 条，含三个新端点 |
+
+12 条 AC 全部通过。端到端验收的实测数据：活动投放 30 张、3 个不同会员领取、核销 1 张订单 128 元 → 名册显示投放 30 / 已领取 3 / 已核销 1 / 核销率 0.3333，下钻显示剩余 27、状态 ACTIVE、优惠「满 100 减 20」，核销记录显示订单 128.00 / 优惠 20.00 / 实付 108.00 / 门店天河体育中心店。名册的 `redeemed_count` 与下钻 `total` 一致。
+
+### 修掉一个根因缺陷：测试污染演示数据
+
+**现象**：`admin_console_check.py` 首轮唯一失败项是「无占位姓名残留」—— 管理员审核队列里混着 6 个「待审OPERATOR」「补齐资料」这类占位申请人。
+
+**根因**：测试直接打真实 PostgreSQL（这是 ADR 的刻意选择，换 SQLite 等于不验证并发语义），而 `conftest.clean_business_data` 刻意保留 `users` 表。注册类用例为可重复运行给账号名加随机十六进制后缀，于是**每跑一次 pytest 就往库里灌一批占位账号**，直接出现在演示要用的审核队列里。
+
+手工清理治不了这个 —— 下一次跑测试又会长出来。已改为在 `conftest._seed_once` 的 teardown 中按账号名形态（`^[a-z][a-z0-9]*_[0-9a-f]{8}$`）清理测试自建账号，按外键顺序删从表。判定用形态而非创建时间：这种名字只可能由脚本生成，种子账号与真人注册都不会产出。`scripts/cleanup_test_accounts.py` 保留为手工工具（默认只报告，`--apply` 才删）。
+
+现在 `pytest tests` 跑完，`cleanup_test_accounts.py` 报告「库是干净的」。
+
+### 演示数据的产品化
+
+`seed.py` 的具名账号扩到 13 个，并新增 5 个中文具名待审申请人（许静／冯凯／苏珊／唐宇／钟晴）。理由：管理员后台的第一屏就是审核队列，空列表让人无从判断功能是否可用。
+
+`_UPSERT_USER` 的 `status` **刻意不进** `DO UPDATE` 更新列 —— 种子申请人一旦被管理员审批过，重启服务不得把它拽回 `PENDING`，那会让演示中刚做完的审批凭空消失。
+
+### 顺带解除的历史阻塞
+
+CR-001 遗留的「8000 端口被旧 uvicorn 进程占用、线上仅 16 条路由」已清除。当时前端注册失败的真实原因就是这个：`/api/auth/register` 在线上不存在，前端拿到 404。重启后线上 25 条路由齐全，注册返回 201。
+
+**一并澄清一个误判**：期间我用 PowerShell 直接发 JSON 曾三次收到 400 `JSON decode error`，那是 shell 吞掉引号所致，不是产品缺陷。用 Python 发同一请求返回 201。**在 PowerShell 里验证 HTTP 契约必须走脚本文件，不能用行内 JSON 字面量。**
+
+---
+
+## CR-002 后的项目状态
+
+| 项 | 状态 |
+|---|---|
+| 后端测试 | 228 passed（真实 PostgreSQL 16.14） |
+| 验收脚本 | `concurrency_check` / `demo_check` / `ai_connectivity_check` / `admin_console_check` 四个全绿 |
+| 前端 | 类型检查与生产构建通过；**浏览器人工验收仍未做**（T-14 遗留） |
+| 一键部署 | **仍未验证**（T-13 遗留，Docker 守护进程不可用） |
+| 第五步 `test-plan.md` | 仍未建；验证证据以任务 AC 为单位记于本文件 |

@@ -262,3 +262,173 @@
 ## 十一、无 Webhook
 
 本项目无外部回调与消息通知（MVP 范围外），故不设计 Webhook 及其签名校验。
+
+---
+
+## 十二、CR-001 新增端点：注册、门店与审核
+
+### POST /api/auth/register — 公开
+
+请求：`{ username, password, display_name, role, phone?, store_id? }`
+
+`role ∈ {USER, VERIFIER, OPERATOR}`。`ADMIN` 不可自助注册（自举问题，由 seed 解决）。
+`VERIFIER` 必填 `store_id`；其余角色不得携带 `store_id`。
+
+响应 `201`：`{ user: User, needs_approval: bool }`。`USER` 即时 `ACTIVE`（`needs_approval=false`），
+`VERIFIER`/`OPERATOR` 为 `PENDING`（`needs_approval=true`）。
+
+错误：`400 VALIDATION_ERROR`（账号少于 4 字符、口令少于 8 字符、姓名为空、门店缺失或不存在）、
+`409 USERNAME_TAKEN`（该账号已被使用；若原账号为 `REJECTED` 则允许覆盖重投，返回 201）。
+
+### GET /api/stores — 公开
+
+响应：`[{ id, code, name, district, address }]`。注册页需在登录前展示门店，故公开。
+
+### GET /api/stores/districts — 公开
+
+响应：`["越秀区", "天河区", ...]`。供注册页与名册的行政区级联筛选。
+
+### GET /api/admin/registrations — `ADMIN`
+
+响应：`[{ id, username, display_name, role, phone, store_id, store_name, store_district, created_at }]`，
+仅 `status = PENDING`，按提交时间升序。
+
+### POST /api/admin/registrations/{user_id}/review — `ADMIN`
+
+请求：`{ approve: bool, reason?: string }`。响应同上单条。
+
+幂等：目标已非 `PENDING` 时不再变更，直接返回当前状态。驳回未给原因时落默认文案，
+保证 `reject_reason` 在 `REJECTED` 状态下永不为空 —— 否则申请人看到的是无解释的拒绝。
+
+错误：`404 USER_NOT_FOUND`。
+
+### GET /api/admin/verifiers — `ADMIN`
+
+查询参数：`district?`、`store_id?`。
+
+响应：`[{ id, username, display_name, phone, status, store_id, store_code, store_name,
+store_district, redeemed_count, created_at }]`。`redeemed_count` 为实时聚合（ADR-008、ADR-016）。
+
+---
+
+## 十三、CR-002 新增端点：运营名册与下钻
+
+三个端点均为**只读**，均归 `ADMIN`。本期管理员对人员的唯一写操作仍是审批（ADR-018）。
+
+### GET /api/admin/operators — `ADMIN`
+
+全部运营人员名册，含投放业绩。
+
+响应：
+
+```json
+[
+  {
+    "id": 12,
+    "username": "op001",
+    "display_name": "李彦",
+    "phone": "13800000002",
+    "status": "ACTIVE",
+    "campaign_count": 3,
+    "total_stock": 1300,
+    "claimed_count": 412,
+    "used_count": 87,
+    "redeem_rate": 0.2112,
+    "created_at": "2026-07-29T02:00:00Z"
+  }
+]
+```
+
+`redeem_rate = used_count / claimed_count`，`claimed_count` 为 0 时返回 `null` 而非 0 ——
+「无人领取」与「领了没人用」是两回事，用 0 表示前者会误导运营复盘。分母口径与
+`GET /api/stats/campaigns/{id}` 的 `redeem_rate_basis` 保持一致。
+
+含 `PENDING` 与 `REJECTED` 账号：名册需要能看到「这个人还没审批」（ADR-018）。
+
+### GET /api/admin/verifiers/{user_id}/redemptions — `ADMIN`
+
+某核销员的核销记录，按核销时间倒序。
+
+查询参数：`page`（默认 1）、`page_size`（默认 20，上限 100）。
+
+响应：
+
+```json
+{
+  "verifier": { "id": 5, "display_name": "王磊", "username": "verifier001",
+                "phone": "13800000003", "store_name": "天河城店", "store_district": "天河区" },
+  "items": [
+    {
+      "id": 9001,
+      "code": "3H7K2M9QRT",
+      "campaign_name": "周末餐饮满减",
+      "coupon_type": "CASH",
+      "benefit_text": "满 100 减 20",
+      "order_amount": "128.00",
+      "discount_amount": "20.00",
+      "payable_amount": "108.00",
+      "used_at": "2026-07-29T11:20:31Z",
+      "store_name": "天河城店"
+    }
+  ],
+  "total": 37,
+  "page": 1,
+  "page_size": 20
+}
+```
+
+金额取核销时落库的快照，不用活动现值重算（ADR-017）。`payable_amount` 由
+`order_amount - discount_amount` 派生，不落库。
+
+错误：`404 USER_NOT_FOUND`（不存在或不是核销员）。
+
+### GET /api/admin/operators/{user_id}/campaigns — `ADMIN`
+
+某运营发布的活动列表，按创建时间倒序。界面文案称「发布的券」，数据粒度是**活动**（Q-023）。
+
+查询参数：`page`、`page_size`（同上）。
+
+响应：
+
+```json
+{
+  "operator": { "id": 12, "display_name": "李彦", "username": "op001",
+                "phone": "13800000002", "status": "ACTIVE" },
+  "items": [
+    {
+      "id": 3,
+      "name": "周末餐饮满减",
+      "category": "FOOD",
+      "coupon_type": "CASH",
+      "benefit_text": "满 100 减 20",
+      "total_stock": 500,
+      "claimed_count": 412,
+      "used_count": 87,
+      "remaining_stock": 88,
+      "status": "ACTIVE",
+      "start_at": "2026-07-29T00:00:00Z",
+      "end_at": "2026-07-31T00:00:00Z"
+    }
+  ],
+  "total": 3,
+  "page": 1,
+  "page_size": 20
+}
+```
+
+`status` 与 `remaining_stock` 均为派生值，口径与 `GET /api/campaigns` 完全一致（ADR-002）。
+
+错误：`404 USER_NOT_FOUND`（不存在或不是运营）。
+
+### 路由与角色映射增补（FR-061）
+
+| 端点 | 角色 |
+|---|---|
+| `POST /api/auth/register` | 公开 |
+| `GET /api/stores`、`GET /api/stores/districts` | 公开 |
+| `GET /api/admin/registrations` | `ADMIN` |
+| `POST /api/admin/registrations/{id}/review` | `ADMIN` |
+| `GET /api/admin/verifiers` | `ADMIN` |
+| `GET /api/admin/verifiers/{id}/redemptions` | `ADMIN` |
+| `GET /api/admin/operators` | `ADMIN` |
+| `GET /api/admin/operators/{id}/campaigns` | `ADMIN` |

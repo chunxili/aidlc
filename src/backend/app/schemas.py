@@ -100,6 +100,92 @@ class VerifierOut(BaseModel):
     created_at: dt.datetime
 
 
+# ---------- 管理员人员名册与下钻（CR-002）----------
+
+class OperatorOut(BaseModel):
+    """运营人员名册行（FR-069）。列的是投放业绩，不是账号资料。"""
+
+    id: int
+    username: str
+    display_name: str
+    phone: str | None
+    status: str
+    campaign_count: int
+    total_stock: int
+    claimed_count: int
+    used_count: int
+    # 分母为 0 时为 None 而非 0：「无人领取」与「领了没人用」是两回事，
+    # 用 0 表示前者会误导运营复盘。口径与 CampaignStatsOut.redeem_rate 一致。
+    redeem_rate: float | None
+    created_at: dt.datetime
+
+
+class VerifierBrief(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    phone: str | None
+    store_name: str
+    store_district: str
+
+
+class RedemptionRecordOut(BaseModel):
+    """核销记录行（FR-070）。金额取核销时落库的快照，不用活动现值重算（ADR-017）。"""
+
+    id: int
+    code: str
+    campaign_name: str
+    coupon_type: str
+    benefit_text: str
+    order_amount: Decimal | None
+    discount_amount: Decimal | None
+    # order_amount - discount_amount，派生不落库
+    payable_amount: Decimal | None
+    used_at: dt.datetime
+    store_name: str | None
+
+
+class VerifierRedemptionsOut(BaseModel):
+    verifier: VerifierBrief
+    items: list[RedemptionRecordOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class OperatorBrief(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    phone: str | None
+    status: str
+
+
+class OperatorCampaignOut(BaseModel):
+    """运营发布的活动行（FR-071）。界面称「发布的券」，数据粒度是活动（Q-023）。"""
+
+    id: int
+    name: str
+    category: str
+    coupon_type: str
+    benefit_text: str
+    total_stock: int
+    claimed_count: int
+    used_count: int
+    remaining_stock: int
+    status: str
+    start_at: dt.datetime
+    end_at: dt.datetime
+
+
+class OperatorCampaignsOut(BaseModel):
+    operator: OperatorBrief
+    items: list[OperatorCampaignOut]
+    total: int
+    page: int
+    page_size: int
+
+
 # ---------- 活动 ----------
 
 class CampaignCreate(BaseModel):
