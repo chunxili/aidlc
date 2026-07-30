@@ -1253,3 +1253,183 @@ CR-001 遗留的「8000 端口被旧 uvicorn 进程占用、线上仅 16 条路�
 | 前端 | 类型检查与生产构建通过；**浏览器人工验收仍未做**（T-14 遗留） |
 | 一键部署 | **仍未验证**（T-13 遗留，Docker 守护进程不可用） |
 | 第五步 `test-plan.md` | 仍未建；验证证据以任务 AC 为单位记于本文件 |
+
+---
+
+# 运营增强 v2 实施任务（CR-002）
+
+**基线状态**：用户已确认 45 项 grilling 决策；需求与设计已落盘。T-15 已完成，T-16~T-18 待实现；T-01~T-14 的历史实现记录保持不变。
+
+## 依赖与里程碑
+
+```text
+T-15 数据迁移与配置基础
+  └─ T-16 活动配置与真实投放
+       └─ T-17 确定性多因素风控
+            └─ T-18 运营驾驶舱与演示闭环
+```
+
+顺序严格遵循已确认决策：活动配置 → 风控 → 驾驶舱。
+
+## T-15 数据迁移与配置基础
+
+- [x] 已完成（2026-07-30）
+
+**目标**：建立运营增强数据模型、默认设置、配置继承和审计能力，同时保证旧数据兼容。
+
+**范围**：Alembic `0003_operator_enhancements`、models/schemas、operator settings/policy/audit services 与 API。
+
+**Depends on**：当前产品化改造迁移 `0002`。
+
+**需求引用**：FR-007、FR-055（配置结构部分）、NFR-013、NFR-015。
+
+**实现要点**：
+1. 按 DB §6 新增/扩展 campaigns、campaign_audiences、campaign_time_windows、campaign_daily_counters、operator_settings、risk_policies、risk_restrictions、config_change_logs 与 risk_events 字段。
+2. 历史活动回填 RUNNING + ALL + 全天 + 无限每日额度 + INHERIT。
+3. 建立 LOW/MEDIUM/HIGH 默认策略与中等全局默认策略；人群阈值按 FR-005 默认值 seed。
+4. 设置 PATCH 带 `expected_version` 乐观锁；修改与审计日志同事务。
+5. 不修改 0001/0002；upgrade 与 downgrade 均可执行。
+
+**验收标准**：
+- AC-1 现有数据库 upgrade 成功且历史活动仍可领取。
+- AC-2 空库全量 upgrade 成功；约束和索引齐全。
+- AC-3 全局设置更新有 before/after 审计；模拟日志失败时配置回滚。
+- AC-4 版本冲突返回 409，不覆盖他人修改。
+- AC-5 全量既有后端测试保持通过。
+
+**验证**：`pytest tests/test_operator_settings.py tests/test_db_constraints.py -v` + `alembic downgrade/upgrade` + 全量回归。
+
+### 实现记录（2026-07-30）
+
+**交付内容**：
+- 新增迁移 `0003_operator`，建立活动人工状态、受众/时段/每日计数、风险策略、活动级限制、运营设置和配置审计结构；旧活动回填 `RUNNING + ALL + 全天 + 无限日额度 + INHERIT`。
+- 新增 `/api/operator/settings` 及 audiences/risk/alerts/changes 子端点，全部由 `require_operator` 强制。
+- 默认 LOW/MEDIUM/HIGH 策略的审核线为 50/40/30、拦截线为 80/70/60、频率硬阈值为 15/10/7；默认全局策略为 MEDIUM。
+- 设置更新使用 `expected_version` + `SELECT FOR UPDATE` 乐观锁，配置与 before/after 审计在同一事务提交。
+- seed 只在设置缺失时初始化，重复启动不覆盖运营修改。
+
+**验证证据**：
+- 现有库：`0003_operator → 0002_product → 0003_operator` 降级/升级成功。
+- 空环境：隔离临时 schema 从 base 依次执行 0001/0002/0003，版本为 `0003_operator`，13 张业务表齐全，验证后已删除 schema。
+- Alembic：`alembic check` 返回 `No new upgrade operations detected`。
+- 测试：`pytest tests -q` → **247 passed**；设置专项 8 项覆盖默认值、幂等 seed、三类更新、版本冲突、非法策略和审计故障回滚。
+- 权限矩阵新增 5 条运营设置路由，专项设置+权限测试曾执行 **120 passed**。
+- `git diff --check` 与 Python 编译检查通过。
+
+**验证中修复的缺陷**：自定义策略名称最初只拼接设置版本与运营 ID，重复测试/重复创建会撞唯一键；改为用户名称 + 随机短 ID，保持策略版本不可变且名称全局唯一。
+
+**已知非阻塞告警**：测试环境 JWT secret 长度不足 32 字节会产生 PyJWT warning；这是既有测试配置问题，不影响 T-15 行为，生产值仍应使用至少 32 字节随机密钥。
+
+## T-16 活动配置与真实投放
+
+- [ ] 未开始
+
+**目标**：让生命周期、人群、每日额度和多个领取时段真实控制领券，并完成六步创建向导与统一活动抽屉。
+
+**Depends on**：T-15。
+
+**需求引用**：FR-004、FR-005、FR-006、FR-007、NFR-013、SC-010。
+
+**实现要点**：
+1. 实现 audience/delivery 服务；所有快速拒绝位于库存事务前，但状态、时段和每日额度在事务内复验。
+2. 每日额度使用 DB §6.4 原子计数并与总库存、限领、券 INSERT 同事务。
+3. 暂停可恢复；提前结束不可逆；既有券不变。
+4. 扩展 campaign API 与错误码，保持旧请求体可用。
+5. 前端改为六步创建向导；活动列表与驾驶舱预留共用 CampaignDetailDrawer；修复列表真实分页。
+
+**验收标准**：
+- AC-1 SC-010 完整通过。
+- AC-2 daily_limit=N 时 N+1 个不同用户真并发恰好 N 成功，且总库存/日计数/券数一致。
+- AC-3 时段边界与北京时间跨日测试通过。
+- AC-4 暂停/终止后不能新领，旧券仍能核销；终止不可恢复。
+- AC-5 旧版创建请求和 concurrency_check.py 继续通过。
+- AC-6 前端类型检查与生产构建通过，浏览器可完成六步创建和抽屉调控。
+
+**验证**：新增 `test_campaign_delivery.py`、扩展并发脚本支持每日额度；`pytest` 全量；`npm run build` 与 `tsc --noEmit`。
+
+## T-17 确定性多因素风控
+
+- [ ] 未开始
+
+**目标**：用硬规则 + 多因素加权替代 AI 裁决，支持活动级策略和有期限限制；AI 仅解释。
+
+**Depends on**：T-16。
+
+**需求引用**：FR-054~057、NFR-012、NFR-015、SC-012、SC-013。
+
+**实现要点**：
+1. 实现六类因素计算，保存非零贡献、证据和完整策略快照；分数封顶 100。
+2. 裁决顺序固定，策略 schema 强制 `review_threshold < block_threshold`。
+3. BLOCK→AUTO_BLOCKED，不进入待办；MANUAL_REVIEW→PENDING，并创建活动级 restriction。
+4. 处置支持 RELEASE、PT1H、PT24H、P7D、PERMANENT；到期惰性失效；不补券。
+5. Bedrock 输入改为既定事实，只返回解释/建议；失败用模板，任何路径不得改变 score/decision。
+6. 前端风险页分待审/自动拦截/已处理，展示贡献条、证据、策略版本和期限处置。
+
+**验收标准**：
+- AC-1 默认模型贡献与分数线边界逐项测试。
+- AC-2 同 fixture 重复、断网和有效 AI 三种场景的 score/decision 完全相同。
+- AC-3 自动拦截不增加待办；人工审核只限制当前活动。
+- AC-4 四种限制期限、惰性到期与幂等处置通过。
+- AC-5 被拒请求不改变库存、每日额度或券数。
+- AC-6 旧全局 `risk_blocked` 不再作为新裁决来源，迁移数据无全局误伤。
+
+**验证**：新增 `test_risk_scoring.py`、`test_risk_restrictions.py`，扩展权限矩阵和 AI connectivity check，执行全量回归。
+
+## T-18 运营驾驶舱与演示闭环
+
+- [ ] 未开始
+
+**目标**：交付统一 as_of 的驾驶舱、趋势/对比/提醒、运营设置页和可直接演示的数据。
+
+**Depends on**：T-17。
+
+**需求引用**：FR-032~034、FR-072、NFR-014、SC-011。
+
+**实现要点**：
+1. `/api/operator/dashboard` 单响应返回 summary/series/campaigns/alerts/as_of；活动详情端点支持统一抽屉。
+2. 今天按小时、7/30 天按日；所有 SQL 使用同一 as_of 和过滤条件；最多 3 活动。
+3. 六类提醒为聚合结果纯函数；设置只保存 enabled/threshold。
+4. 前端提供 5/10/30 秒/关闭和手动刷新；单飞请求，旧响应不得覆盖新筛选。
+5. `/stats` 运营端停止调用 ADMIN overview/integrity；新增 `/settings` 三页签。
+6. 扩充幂等 seed，提供人群、趋势、不同策略和两类风险处置演示数据。
+
+**验收标准**：
+- AC-1 六 KPI 与 SQL 对账，趋势桶汇总等于总览。
+- AC-2 时间/状态/品类/活动筛选对全屏一致生效；最多 3 活动。
+- AC-3 六类提醒的阈值边界、启停和活动定位通过。
+- AC-4 自动刷新四档、关闭、手动刷新与无重叠请求通过浏览器验证。
+- AC-5 SC-011 从提醒下钻、暂停、风控提级、恢复的完整演示通过。
+- AC-6 seed 重复运行不重复且不覆盖已产生的真实业务数据。
+- AC-7 后端全量测试、前端类型/构建、并发与 demo 脚本全部通过。
+
+**验证**：`pytest tests/ -q`；驾驶舱专项 SQL 对账；`npm run build && npx tsc --noEmit`；更新并执行 `scripts/demo_check.py`。
+
+## v2 覆盖自检
+
+- T-15 覆盖配置基础、迁移兼容和审计。
+- T-16 覆盖 FR-004~007 的活动投放主链。
+- T-17 覆盖 FR-054~057 的确定性风控主链。
+- T-18 覆盖 FR-032~034、FR-072 的驾驶舱与演示。
+- 12 项新增 FR、4 项新增 NFR、4 个新增 SC 均有任务和可观察验收标准，无悬空需求。
+
+
+## v2 逐项需求任务索引
+
+| 需求 | 主任务 |
+|---|---|
+| FR-004 | T-16 |
+| FR-005 | T-16 |
+| FR-006 | T-16 |
+| FR-007 | T-15（配置/审计）+ T-16（活动继承） |
+| FR-032 | T-18 |
+| FR-033 | T-18 |
+| FR-034 | T-18 |
+| FR-054 | T-17 |
+| FR-055 | T-15（策略结构）+ T-17（裁决接入） |
+| FR-056 | T-17 |
+| FR-057 | T-17 |
+| FR-072 | T-18 |
+| NFR-012 | T-17 |
+| NFR-013 | T-15 + T-16 |
+| NFR-014 | T-18 |
+| NFR-015 | T-15 + T-17 |

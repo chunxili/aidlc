@@ -87,3 +87,53 @@
 ## 六、覆盖结论
 
 22 项 FR、11 项 NFR、3 条不变量、9 个场景全部有设计落点与验证方式，无悬空需求，无未被需求引用的设计元素。
+
+
+---
+
+# 七、运营增强 v2 追踪增量（CR-002）
+
+> 本节将权威覆盖总数更新为 34 FR、15 NFR、3 INV、13 SC。旧 FR-050~052 的冲突行为由 FR-054~057 覆盖。
+
+## 7.1 新增功能需求追踪
+
+| FR | 设计章节 | 数据实体 | API | 页面 | 验证方式 |
+|---|---|---|---|---|---|
+| FR-004 生命周期调控 | ARCH §9.3；ADR-016 | campaigns.manual_state、config_change_logs | POST campaigns/{id}/pause/resume/terminate | /campaigns 详情抽屉 | 状态机测试；暂停/终止后旧券仍可核销；TERMINATED 不可恢复 |
+| FR-005 目标人群 | ARCH §9.2；ADR-017 | campaign_audiences、operator_settings | POST/PATCH campaigns；PATCH settings/audiences | 创建向导、人群设置 | 六类人群边界测试；多人群 OR；未命中不扣库存 |
+| FR-006 每日额度与时段 | ARCH §9.2；DB §6.3/6.4；ADR-018 | campaign_time_windows、campaign_daily_counters | POST/PATCH campaigns；claim | 创建向导、详情抽屉 | 并发 daily_limit+1；北京时间零点；时段边界；事务回滚 |
+| FR-007 设置/继承/日志 | ARCH §9.1；DB §6.5/6.8 | operator_settings、risk_policies、config_change_logs | /api/operator/settings/**；campaign changes | /settings、详情变更页签 | 继承活动即时变化、覆盖活动不变；乐观锁；审计同事务 |
+| FR-032 驾驶舱总览 | ARCH §9.5；ADR-020 | 实时聚合 | GET /api/operator/dashboard | /stats | 六 KPI 与 SQL 对账；统一筛选；轮询关闭 |
+| FR-033 趋势与对比 | ARCH §9.5；DB §6.9 | user_coupons、risk_events、daily counters | GET /api/operator/dashboard | /stats 趋势/对比 | 桶汇总=总览；最多 3 活动；空态 |
+| FR-034 提醒与下钻 | ARCH §9.5 | operator_settings.alert_settings | dashboard + campaign detail/actions | /stats、统一抽屉 | 六类提醒阈值边界；关闭后消失；提醒定位活动 |
+| FR-054 加权风控 | ARCH §9.4；ADR-019 | risk_events.factor/evidence/policy | claim risk 段 | /risk 展开详情 | 固定输入重复评估一致；贡献和=总分；硬规则优先 |
+| FR-055 策略等级与覆盖 | DB §6.6；API §12.3 | risk_policies、campaigns.risk_policy_id | settings/risk；PATCH campaigns | /settings、创建向导 | 预设切换真实影响；非法阈值拒绝；事件快照可复算 |
+| FR-056 活动级限制 | ARCH §9.4；DB §6.7 | risk_events、risk_restrictions | risk events/handle | /risk | BLOCK 非待办；限制不影响其他活动；到期惰性恢复；幂等 |
+| FR-057 AI 仅解释 | ARCH §9.4；ADR-019 | risk_events.explanation_source、ai_invocations | claim/risk events | /risk | AI 开关前后分数决策一致；模板降级；凭证扫描 |
+| FR-072 演示数据 | DB §6.10 | 全部增强实体 | 启动 seed | 全运营页面 | 首次启动有完整场景；重复 seed 不重复/不篡改 |
+
+## 7.2 新增非功能需求追踪
+
+| NFR | 设计落点 | 验证方式 |
+|---|---|---|
+| NFR-012 确定性可解释风控 | ARCH §9.4；DB 风险快照；ADR-019 | 固定 fixture 在有/无 AI、重复调用下逐字段比较 score/decision；复算贡献 |
+| NFR-013 增量兼容 | DB §6.10；ARCH §9.6 | 从现有 revision 升级；旧活动可领；全量旧测试与脚本回归 |
+| NFR-014 驾驶舱一致性 | ARCH §9.5；ADR-020 | 响应单一 as_of；趋势和总览对账；轮询单飞浏览器验证 |
+| NFR-015 配置审计 | DB §6.8 | 每类变更均有 before/after；事务故障时配置与日志同时回滚 |
+
+## 7.3 场景追踪
+
+| SC | 设计 | 验证入口 |
+|---|---|---|
+| SC-010 精细投放 | ADR-017/018 | 创建向导 + 领券 API + 每日额度并发测试 |
+| SC-011 观察调控 | ADR-016/020 | 驾驶舱提醒 → 抽屉暂停/提级 → 领券/核销 |
+| SC-012 多因素闭环 | ADR-019 | 风险贡献 → 1h 限制 → 跨活动领取 → 到期恢复 |
+| SC-013 AI 断网一致 | ADR-019 | 同 fixture 有/无凭证比较 score/decision |
+
+## 7.4 冲突关闭
+
+- 旧 ARCH §4 的“AI 灰区评分+决策”由 ADR-019 关闭；Bedrock 风控调用只生成解释。
+- 旧 DB `users.risk_blocked` 全局布尔值由活动级 `risk_restrictions` 取代。
+- 旧 risk_events 的 BLOCK=PENDING 由 AUTO_BLOCKED 取代，解决硬拦截制造运营待办的问题。
+- 旧 FE `/stats` 对运营调用 ADMIN 端点的实现由统一运营 dashboard API 取代。
+- 活动时间状态仍派生；新增 manual_state 不违反 ADR-002，因为二者表达不同维度。

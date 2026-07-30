@@ -174,3 +174,87 @@ graph LR
 | 服务端异常 | 500 | 不含堆栈与凭证 |
 
 AI 故障**不产生独立错误码**：一律转为降级并在响应中以 `degraded` 标识，用户不感知 AI 错误（FR-041、FR-051）。
+
+
+---
+
+# 九、运营增强 v2 架构增量（CR-002）
+
+> 本节在既有单体架构内增量实现，不新增 Redis、队列、调度器或 WebSocket。与旧风控 AI 裁决路径冲突时，以本节为准。
+
+## 9.1 模块增量
+
+| 模块 | 新职责 |
+|---|---|
+| `services/audience` | 统一求值预设人群；读取全局阈值；返回命中包与证据 |
+| `services/delivery` | 人工活动状态、北京时间领取时段、每日额度检查与原子占额 |
+| `services/policy` | 全局设置、活动继承/覆盖、低中高风控预设、配置校验和变更审计 |
+| `services/risk` | 硬规则 + 多因素加权裁决；活动级限制；AI 只生成解释 |
+| `services/dashboard` | 统一 `as_of` 下的总览、趋势、排行、提醒和活动详情聚合 |
+
+依赖方向保持 `routers → services → models/db`。`claim` 只编排 audience、delivery、risk 与库存事务，不复制各模块规则。
+
+## 9.2 增强领券时序
+
+```mermaid
+sequenceDiagram
+  participant U as 用户
+  participant API
+  participant A as audience
+  participant D as delivery
+  participant R as risk
+  participant DB as PostgreSQL
+  participant AI as Bedrock(仅解释)
+  U->>API: POST /api/coupons/claim
+  API->>A: 目标人群求值（事务外）
+  A->>DB: 用户历史 + 全局人群阈值
+  alt 未命中
+    API-->>U: 403 AUDIENCE_NOT_ELIGIBLE
+  end
+  API->>D: 人工状态/总时间窗/本地时段预检
+  alt 不可投放
+    API-->>U: 409 PAUSED/TERMINATED/OUTSIDE_WINDOW
+  end
+  API->>R: 硬规则 + 因素评分（事务外）
+  R->>DB: 行为、风险历史、活动策略与现有限制
+  opt 生成解释
+    R-->>AI: 已确定的贡献项与决策
+    AI-->>R: 自然语言解释；失败用模板
+  end
+  alt 自动拦截或人工审核
+    R->>DB: 风险事件/活动级限制
+    API-->>U: 403 RISK_BLOCKED / RISK_MANUAL_REVIEW
+  end
+  API->>DB: BEGIN
+  API->>DB: 原子占用当日额度
+  API->>DB: 条件 UPDATE 总库存
+  API->>DB: 校验个人限领并 INSERT user_coupon
+  API->>DB: COMMIT
+  API-->>U: 201 coupon + risk
+```
+
+事务外检查用于快速拒绝；事务内必须再次校验人工状态、时间窗和每日额度，避免检查后配置变化或并发穿透。总库存与每日额度的占用在同一事务，任一步失败全部回滚。
+
+## 9.3 状态组合
+
+- 时间状态：`PENDING / ACTIVE / ENDED`，继续实时派生。
+- 人工状态：`RUNNING / PAUSED / TERMINATED`，持久化。
+- 最终可领：时间状态 ACTIVE 且人工状态 RUNNING，另满足人群、时段、每日额度、个人限领、总库存和风险要求。
+- PAUSED 可回 RUNNING；TERMINATED 为终态。
+- 任何活动状态都不修改已发 `user_coupon`，保持 INV-2/INV-3。
+
+## 9.4 确定性风控
+
+裁决顺序固定：现有活动级限制 → 硬规则 → 计算因素贡献 → 封顶 100 → 应用审核/拦截分数线。事件保存 `factor_breakdown`、`evidence_snapshot`、`policy_snapshot`，足以离线复算。AI 输入只含这些已确定事实，输出只写 `explanation`，不得进入裁决分支。
+
+自动 BLOCK 使用 `AUTO_BLOCKED` 处置状态，不进入待办；MANUAL_REVIEW 使用 `PENDING`。限制键为 `(user_id, campaign_id)`，`restricted_until IS NULL` 表示永久；非空且已过期视为无有效限制，无需定时任务。
+
+## 9.5 驾驶舱一致性
+
+驾驶舱 API 在请求开始生成 `as_of`，全部 SQL 使用该值而非各自调用 `now()`。时间范围统一转换为 UTC 边界后查询；今天按小时、7/30 天按日聚合。提醒是当前聚合结果上的纯函数，不存提醒实例；设置只保存启停与阈值。
+
+前端轮询采用单飞机制：上次请求结束后才安排下一次；切换筛选立即取消/忽略旧响应。活动详情抽屉由活动管理与驾驶舱共用。
+
+## 9.6 兼容迁移
+
+新增字段必须有兼容默认：`manual_state=RUNNING`、每日额度 NULL、时段空数组=全天、目标人群 ALL、策略来源 INHERIT。历史 `users.risk_blocked` 在迁移过渡期只读兼容，完成活动级限制迁移后不再作为裁决来源。所有历史迁移保持不变。

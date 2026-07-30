@@ -422,3 +422,97 @@ class IntegrityOut(BaseModel):
     inv1_stock_overflow_count: int
     inv2_mismatch_campaign_ids: list[int]
     ok: bool
+
+
+# ---------- 运营增强 v2 设置（CR-002 / T-15） ----------
+
+class AudienceThresholds(BaseModel):
+    new_user_days: int = Field(default=7, ge=1, le=365)
+    active_days: int = Field(default=7, ge=1, le=365)
+    dormant_days: int = Field(default=30, ge=1, le=3650)
+    redeem_sample_size: int = Field(default=3, ge=1, le=1000)
+    high_redeem_rate: int = Field(default=60, ge=0, le=100)
+    low_redeem_rate: int = Field(default=20, ge=0, le=100)
+
+
+class AudienceSettingsUpdate(BaseModel):
+    expected_version: int = Field(ge=1)
+    thresholds: AudienceThresholds
+
+
+class AlertRule(BaseModel):
+    enabled: bool = True
+    threshold: float = Field(ge=0)
+
+
+class AlertSettings(BaseModel):
+    quota_usage: AlertRule = AlertRule(threshold=0.8)
+    exhaustion_hours: AlertRule = AlertRule(threshold=2)
+    claim_growth: AlertRule = AlertRule(threshold=1.0)
+    risk_rate: AlertRule = AlertRule(threshold=0.1)
+    pending_risks: AlertRule = AlertRule(threshold=20)
+    redeem_rate_gap: AlertRule = AlertRule(threshold=0.2)
+
+
+class AlertSettingsUpdate(BaseModel):
+    expected_version: int = Field(ge=1)
+    settings: AlertSettings
+
+
+class RiskHardRules(BaseModel):
+    window_seconds: int = Field(default=10, ge=1, le=3600)
+    hard_threshold: int = Field(default=10, ge=1, le=10000)
+
+
+class RiskFactorWeights(BaseModel):
+    frequency: int = Field(default=40, ge=0, le=100)
+    new_account: int = Field(default=15, ge=0, le=100)
+    low_redeem: int = Field(default=15, ge=0, le=100)
+    unused_coupons: int = Field(default=10, ge=0, le=100)
+    risk_history: int = Field(default=20, ge=0, le=100)
+    high_value: int = Field(default=10, ge=0, le=100)
+
+
+class CustomRiskPolicyIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    hard_rules: RiskHardRules
+    factor_weights: RiskFactorWeights
+    review_threshold: int = Field(ge=0, le=99)
+    block_threshold: int = Field(ge=1, le=100)
+
+
+class RiskSettingsUpdate(BaseModel):
+    expected_version: int = Field(ge=1)
+    level: Literal["LOW", "MEDIUM", "HIGH", "CUSTOM"]
+    custom: CustomRiskPolicyIn | None = None
+
+
+class RiskPolicyOut(BaseModel):
+    id: int
+    name: str
+    level: str
+    hard_rules: dict[str, Any]
+    factor_weights: dict[str, Any]
+    review_threshold: int
+    block_threshold: int
+    version: int
+
+
+class OperatorSettingsOut(BaseModel):
+    version: int
+    audience_thresholds: AudienceThresholds
+    default_risk_policy: RiskPolicyOut
+    alert_settings: AlertSettings
+    updated_by: str | None
+    updated_at: dt.datetime
+
+
+class ConfigChangeOut(BaseModel):
+    id: int
+    object_type: str
+    object_id: str
+    action: str
+    before_data: dict[str, Any]
+    after_data: dict[str, Any]
+    changed_by: str
+    created_at: dt.datetime

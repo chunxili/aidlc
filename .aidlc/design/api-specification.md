@@ -432,3 +432,126 @@ store_district, redeemed_count, created_at }]`。`redeemed_count` 为实时聚�
 | `GET /api/admin/verifiers/{id}/redemptions` | `ADMIN` |
 | `GET /api/admin/operators` | `ADMIN` |
 | `GET /api/admin/operators/{id}/campaigns` | `ADMIN` |
+
+---
+
+# 十二、运营增强 v2 API 增量（CR-002）
+
+> 保留现有端点兼容。新增响应字段均向后兼容；与旧风控裁决契约冲突时，以本节为准。
+
+## 12.1 新增错误码
+
+| HTTP | code | 含义 |
+|---|---|---|
+| 403 | `AUDIENCE_NOT_ELIGIBLE` | 用户未命中活动目标人群 |
+| 409 | `CAMPAIGN_PAUSED` | 活动已暂停 |
+| 409 | `CAMPAIGN_TERMINATED` | 活动已提前结束 |
+| 409 | `OUTSIDE_CLAIM_WINDOW` | 不在每日领取时段 |
+| 409 | `DAILY_LIMIT_REACHED` | 当日额度耗尽 |
+| 409 | `INVALID_STATE_TRANSITION` | 非法活动状态转换 |
+| 400 | `INVALID_POLICY` | 风控阈值/权重组合非法 |
+
+## 12.2 活动创建与更新扩展
+
+`POST /api/campaigns` 增加可选字段：
+
+```json
+{
+  "daily_limit": 100,
+  "claim_windows": [{"start":"10:00","end":"12:00"},{"start":"18:00","end":"20:00"}],
+  "audience_segments": ["NEW","DORMANT"],
+  "risk_policy": {"mode":"INHERIT"},
+  "alert_overrides": null
+}
+```
+
+缺省为 unlimited + 全天 + ALL + INHERIT。窗口重叠、ALL 与其他人群混选返回 400。
+
+`PATCH /api/campaigns/{id}` 增加 `daily_limit`、`claim_windows`、`audience_segments`、`risk_policy`；优惠内容仍不可改。
+
+新增动作：
+
+- `POST /api/campaigns/{id}/pause` — OP，RUNNING→PAUSED。
+- `POST /api/campaigns/{id}/resume` — OP，PAUSED→RUNNING；TERMINATED 不可恢复。
+- `POST /api/campaigns/{id}/terminate` — OP，RUNNING/PAUSED→TERMINATED，需 `{ "confirm": true }`。
+- `GET /api/campaigns/{id}/changes?page=&page_size=` — OP，配置变更日志。
+
+活动响应增加 `manual_state`、`claimability`（可领与否及原因）、`daily_limit`、`today_claimed_count`、`claim_windows`、`audience_segments`、`risk_policy_summary`。
+
+## 12.3 运营设置
+
+- `GET /api/operator/settings` — OP。
+- `PATCH /api/operator/settings/audiences` — OP，更新人群阈值并返回受影响运行中活动数。
+- `PATCH /api/operator/settings/risk` — OP，更新全局默认策略；请求支持 LOW/MEDIUM/HIGH/CUSTOM。
+- `PATCH /api/operator/settings/alerts` — OP，更新六类预设提醒的 enabled/threshold。
+- `GET /api/operator/settings/changes?page=&page_size=` — OP。
+
+PATCH 使用完整版本号 `expected_version` 做乐观并发控制；版本不匹配返回 409 `CONFIG_VERSION_CONFLICT`，避免两个运营页面互相覆盖。
+
+## 12.4 风险事件与处置 v2
+
+风险评估响应：
+
+```json
+{
+  "score": 58,
+  "decision": "MANUAL_REVIEW",
+  "decided_by": "RULE",
+  "policy": {"source":"CAMPAIGN_OVERRIDE","version":3,"level":"HIGH"},
+  "factors": [
+    {"code":"FREQUENCY","points":30,"evidence":{"window_count":6}},
+    {"code":"NEW_ACCOUNT","points":15,"evidence":{"account_age_days":1}}
+  ],
+  "explanation":"…",
+  "explanation_source":"AI"
+}
+```
+
+`GET /api/risk/events` 新增筛选：`handling_status`、`campaign_id`、`decision`；只把 `handling_status=PENDING` 计入待办。
+
+`POST /api/risk/events/{id}/handle` 请求改为：
+
+```json
+{ "action":"RELEASE" }
+```
+
+或：
+
+```json
+{ "action":"RESTRICT", "duration":"PT24H" }
+```
+
+允许 `PT1H`、`PT24H`、`P7D`、`PERMANENT`。限制只作用事件的 campaign；BLOCK/AUTO_BLOCKED 不可作为人工待办处理。重复同一处理返回当前状态。
+
+## 12.5 运营驾驶舱
+
+`GET /api/operator/dashboard` — OP。
+
+查询：`range=today|7d|30d|custom`、`from`、`to`、`status`、`category`、重复 `campaign_id`（最多 3）。响应在单次数据库会话中使用统一 `as_of`：
+
+```json
+{
+  "as_of":"2026-07-30T10:00:00Z",
+  "timezone":"Asia/Shanghai",
+  "summary":{
+    "claims":120,"redemptions":51,"active_campaigns":4,
+    "daily_quota_usage_rate":0.72,"pending_risks":3,"risk_block_rate":0.08
+  },
+  "series":[{"bucket":"2026-07-30T09:00:00+08:00","claims":20,"redemptions":8,"risk_requests":3,"remaining_quota":40}],
+  "campaigns":[],
+  "alerts":[]
+}
+```
+
+`GET /api/operator/dashboard/campaigns/{id}` — OP，返回抽屉详情：业务指标、趋势、额度、风险构成、人群/策略摘要、提醒与最近变更。所有调控动作仍调用 campaign 动作/更新端点，不在统计端点产生写操作。
+
+## 12.6 路由角色增量
+
+| 方法与路径 | 允许角色 |
+|---|---|
+| POST `/api/campaigns/{id}/pause|resume|terminate` | OPERATOR |
+| GET `/api/campaigns/{id}/changes` | OPERATOR |
+| GET/PATCH `/api/operator/settings/**` | OPERATOR |
+| GET `/api/operator/dashboard`、`/campaigns/{id}` | OPERATOR |
+
+后端单一 `require_operator` 依赖强制。ADMIN 不自动继承运营写权限。

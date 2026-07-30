@@ -195,3 +195,128 @@ seed（FR-062）独立于迁移，以 `INSERT ... ON CONFLICT (username) DO NOTH
 ## 五、数据保留
 
 演示项目，不做归档与清理。`ai_invocations` 的增长由"不存完整 prompt"控制；`risk_events` 的增长由"仅落 BLOCK/MANUAL_REVIEW"控制。
+
+
+---
+
+# 六、运营增强 v2 数据设计（CR-002）
+
+> 本节取代前文“五张表，无更多”的历史范围描述。实际产品化改造已有 `stores` 等增量表；本次继续用新增 Alembic revision 扩展。
+
+## 6.1 campaigns 增量字段
+
+| 字段 | 类型 | 约束/默认 | 说明 |
+|---|---|---|---|
+| manual_state | varchar(16) | NOT NULL DEFAULT RUNNING；CHECK | RUNNING/PAUSED/TERMINATED |
+| terminated_at | timestamptz | NULL | 提前结束时间；TERMINATED 时非空 |
+| terminated_by | bigint | NULL FK users | 提前结束操作人 |
+| daily_limit | integer | NULL CHECK > 0 | NULL 表示无限每日额度 |
+| audience_mode | varchar(16) | NOT NULL DEFAULT GLOBAL | GLOBAL/OVERRIDE，预留一致继承语义 |
+| risk_policy_mode | varchar(16) | NOT NULL DEFAULT INHERIT | INHERIT/OVERRIDE |
+| risk_policy_id | bigint | NULL FK risk_policies | OVERRIDE 时必填 |
+
+人工状态约束：`TERMINATED` 必须有 `terminated_at/terminated_by`；其他状态两字段为空。禁止 TERMINATED 回到其他状态由服务层状态机强制并写审计。
+
+## 6.2 campaign_audiences
+
+| 字段 | 类型 | 约束 |
+|---|---|---|
+| campaign_id | bigint FK campaigns | PK 组成 |
+| segment_code | varchar(32) | PK 组成；CHECK in ALL/NEW/ACTIVE/DORMANT/HIGH_REDEEM/LOW_REDEEM |
+
+同一活动多个行采用 OR。`ALL` 不得与其他 segment 同时保存，由服务层校验。
+
+## 6.3 campaign_time_windows
+
+| 字段 | 类型 | 约束 |
+|---|---|---|
+| id | bigserial | PK |
+| campaign_id | bigint FK campaigns | NOT NULL |
+| start_minute | smallint | 0~1439 |
+| end_minute | smallint | 1~1440，且 end > start |
+
+以北京时间一天内分钟数保存，不携带日期或时区。服务层拒绝同活动重叠区间。无记录表示全天可领。
+
+## 6.4 campaign_daily_counters
+
+| 字段 | 类型 | 约束 |
+|---|---|---|
+| campaign_id | bigint FK campaigns | PK 组成 |
+| business_date | date | PK 组成；Asia/Shanghai 日期 |
+| claimed_count | integer | NOT NULL DEFAULT 0 CHECK >=0 |
+| updated_at | timestamptz | NOT NULL |
+
+原子占额：先 `INSERT ... ON CONFLICT DO NOTHING`，再执行：
+
+```sql
+UPDATE campaign_daily_counters d
+   SET claimed_count = claimed_count + 1, updated_at = :as_of
+  FROM campaigns c
+ WHERE d.campaign_id = c.id
+   AND d.campaign_id = :cid
+   AND d.business_date = :business_date
+   AND (c.daily_limit IS NULL OR d.claimed_count < c.daily_limit)
+   AND c.manual_state = 'RUNNING';
+```
+
+`rowcount=0` 表示每日额度耗尽或状态改变；该 UPDATE 与总库存扣减、券 INSERT 同事务，后续失败自动回滚日计数。
+
+## 6.5 operator_settings
+
+单例行 `id=1`，字段：`audience_thresholds jsonb`、`default_risk_policy_id`、`alert_settings jsonb`、`updated_by`、`updated_at`。JSON 必须经 Pydantic schema 校验后落库；数据库只做非空与 JSON 类型兜底。
+
+默认 audience_thresholds：新用户 7 天、活跃 7 天、沉睡 30 天、核销样本 3、高核销 60%、低核销 20%。
+
+## 6.6 risk_policies
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | bigserial PK | |
+| name / level | varchar | LOW/MEDIUM/HIGH/CUSTOM |
+| is_global_default | boolean | 至多一条 true |
+| hard_rules | jsonb | 窗口秒数、频率硬阈值等 |
+| factor_weights | jsonb | 六类因素分值配置 |
+| review_threshold | integer | 0~99 |
+| block_threshold | integer | 1~100 且大于 review_threshold |
+| version | integer | 每次修改递增 |
+| created_by / updated_by / timestamps | 审计 | |
+
+活动继承时风险事件仍保存当次完整 `policy_snapshot`，确保事后可复算，不依赖当前全局值。
+
+## 6.7 risk_events 增量与 risk_restrictions
+
+`risk_events` 新增：
+
+- `factor_breakdown jsonb NOT NULL DEFAULT '{}'`
+- `evidence_snapshot jsonb NOT NULL DEFAULT '{}'`
+- `policy_snapshot jsonb NOT NULL DEFAULT '{}'`
+- `explanation_source varchar(16)`：AI/TEMPLATE
+- `recommended_action text`
+- `handling_status varchar(20)`：AUTO_BLOCKED/PENDING/RELEASED/RESTRICTED
+- `restricted_until timestamptz NULL`
+
+旧 `status` 字段迁移映射后进入兼容期，API 改用 `handling_status`。BLOCK 默认 AUTO_BLOCKED；MANUAL_REVIEW 默认 PENDING。
+
+`risk_restrictions`：`(user_id,campaign_id)` UNIQUE，含 `source_event_id`、`restricted_until`（NULL=永久）、`released_at/by`、`created_at/by`。查询有效限制条件为未释放且 (`restricted_until IS NULL OR restricted_until > :as_of`)。
+
+## 6.8 config_change_logs
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | bigserial PK | |
+| object_type | varchar(32) | CAMPAIGN/OPERATOR_SETTINGS/RISK_POLICY/ALERT_SETTINGS |
+| object_id | varchar(64) | 支持单例和数值 ID |
+| action | varchar(32) | CREATE/UPDATE/PAUSE/RESUME/TERMINATE |
+| before_data / after_data | jsonb | 差异前后快照 |
+| changed_by | bigint FK users | OP |
+| created_at | timestamptz | |
+
+只提供查询，不提供删除/更新 API。配置修改与日志 INSERT 同事务。
+
+## 6.9 指标查询索引
+
+新增索引：`user_coupons(claimed_at,campaign_id)`、`user_coupons(used_at,campaign_id) WHERE used_at IS NOT NULL`、`risk_events(created_at,campaign_id,decision)`、`risk_events(handling_status,created_at)`、`config_change_logs(object_type,object_id,created_at DESC)`。活动级实时数据规模为演示级，继续禁止预聚合表。
+
+## 6.10 迁移与兼容
+
+新增 revision（建议 `0003_operator_enhancements`）按“先建新表 → 加可空/带默认字段 → 回填 → 加约束/索引”执行。历史活动回填 ALL 人群、RUNNING、无限每日额度、全天、INHERIT。现有 risk_blocked 用户按其未处理事件迁移为对应活动限制；无法确定活动的旧记录不应扩散成全局限制，保留审计但不阻断所有活动。

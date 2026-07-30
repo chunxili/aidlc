@@ -89,3 +89,20 @@ def username_taken() -> BusinessError:
 
 def store_not_found() -> BusinessError:
     return BusinessError(404, "STORE_NOT_FOUND", "门店不存在")
+
+
+# ---- 运营增强 v2（CR-002）----
+def operator_settings_not_found() -> BusinessError:
+    return BusinessError(500, "OPERATOR_SETTINGS_NOT_INITIALIZED", "运营设置尚未初始化")
+
+
+def config_version_conflict(current_version: int) -> BusinessError:
+    return BusinessError(
+        409,
+        "CONFIG_VERSION_CONFLICT",
+        f"配置已被其他操作更新，请刷新后重试（当前版本 {current_version}）",
+    )
+
+
+def invalid_policy(message: str) -> BusinessError:
+    return BusinessError(400, "INVALID_POLICY", message)

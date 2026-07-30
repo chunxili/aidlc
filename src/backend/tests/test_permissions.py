@@ -31,6 +31,12 @@ ROUTE_MATRIX = [
     ("GET", "/api/admin/registrations", {"ADMIN"}),
     ("POST", "/api/admin/registrations/1/review", {"ADMIN"}),
     ("GET", "/api/admin/verifiers", {"ADMIN"}),
+    # 运营增强 v2（CR-002）
+    ("GET", "/api/operator/settings", {"OPERATOR"}),
+    ("PATCH", "/api/operator/settings/audiences", {"OPERATOR"}),
+    ("PATCH", "/api/operator/settings/risk", {"OPERATOR"}),
+    ("PATCH", "/api/operator/settings/alerts", {"OPERATOR"}),
+    ("GET", "/api/operator/settings/changes", {"OPERATOR"}),
 ]
 
 ROLE_ACCOUNTS = {

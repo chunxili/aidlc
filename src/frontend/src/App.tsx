@@ -22,6 +22,7 @@ import StatsPage from './pages/StatsPage'
 import RegistrationsPage from './pages/RegistrationsPage'
 import VerifiersPage from './pages/VerifiersPage'
 import OperatorsPage from './pages/OperatorsPage'
+import SettingsPage from './pages/SettingsPage'
 
 const PUBLIC_ROUTES = ['/login', '/register']
 
@@ -38,6 +39,7 @@ const NAV: NavItem[] = [
   { key: '/my-coupons', label: '我的优惠券', roles: ['USER'], group: '会员' },
   { key: '/campaigns', label: '活动管理', roles: ['OPERATOR'], group: '营销' },
   { key: '/risk', label: '风险名单', roles: ['OPERATOR'], group: '营销', badge: 'riskPending' },
+  { key: '/settings', label: '运营设置', roles: ['OPERATOR'], group: '营销' },
   { key: '/verify', label: '券码核销', roles: ['VERIFIER'], group: '门店' },
   {
     key: '/admin/registrations',
@@ -248,6 +250,14 @@ export default function App() {
                 element={
                   <RequireRole roles={['OPERATOR']}>
                     <RiskPage onHandled={refreshBadges} />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="/settings"
+                element={
+                  <RequireRole roles={['OPERATOR']}>
+                    <SettingsPage />
                   </RequireRole>
                 }
               />

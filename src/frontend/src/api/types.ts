@@ -309,6 +309,78 @@ export interface Integrity {
   ok: boolean
 }
 
+// ---------- 运营设置 ----------
+
+export interface AudienceThresholds {
+  new_user_days: number
+  active_days: number
+  dormant_days: number
+  redeem_sample_size: number
+  high_redeem_rate: number
+  low_redeem_rate: number
+}
+
+export interface AlertRule {
+  enabled: boolean
+  threshold: number
+}
+
+export interface AlertSettings {
+  quota_usage: AlertRule
+  exhaustion_hours: AlertRule
+  claim_growth: AlertRule
+  risk_rate: AlertRule
+  pending_risks: AlertRule
+  redeem_rate_gap: AlertRule
+}
+
+export interface RiskHardRules {
+  window_seconds: number
+  hard_threshold: number
+}
+
+export interface RiskFactorWeights {
+  frequency: number
+  new_account: number
+  low_redeem: number
+  unused_coupons: number
+  risk_history: number
+  high_value: number
+}
+
+export type RiskPolicyLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CUSTOM'
+
+export interface RiskPolicy {
+  id: number
+  name: string
+  level: RiskPolicyLevel
+  hard_rules: RiskHardRules
+  factor_weights: RiskFactorWeights
+  review_threshold: number
+  block_threshold: number
+  version: number
+}
+
+export interface OperatorSettings {
+  version: number
+  audience_thresholds: AudienceThresholds
+  default_risk_policy: RiskPolicy
+  alert_settings: AlertSettings
+  updated_by: string | null
+  updated_at: string
+}
+
+export interface ConfigChange {
+  id: number
+  object_type: 'OPERATOR_SETTINGS' | 'RISK_POLICY' | 'ALERT_SETTINGS' | 'CAMPAIGN'
+  object_id: string
+  action: string
+  before_data: Record<string, unknown>
+  after_data: Record<string, unknown>
+  changed_by: string
+  created_at: string
+}
+
 export const CATEGORY_LABEL: Record<Category, string> = {
   FOOD: '餐饮',
   TRAVEL: '出行',
@@ -344,5 +416,8 @@ export const ERROR_MESSAGE: Record<string, string> = {
   STORE_NOT_FOUND: '门店不存在',
   ACCOUNT_PENDING_APPROVAL: '账号正在审核中',
   ACCOUNT_REJECTED: '账号申请未通过',
+  CONFIG_VERSION_CONFLICT: '配置已被其他操作更新，请刷新后重试',
+  INVALID_POLICY: '配置不符合规则，请检查阈值',
+  OPERATOR_SETTINGS_NOT_INITIALIZED: '运营设置尚未初始化',
   FORBIDDEN: '无权访问该资源',
 }

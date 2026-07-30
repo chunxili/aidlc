@@ -138,3 +138,7 @@ app.include_router(redemptions.router)
 app.include_router(recommendations.router)
 app.include_router(risk.router)
 app.include_router(stats.router)
+# 延迟导入避免扩大顶部路由清单；运营设置是 CR-002 增量模块。
+from .routers import operator_settings
+
+app.include_router(operator_settings.router)

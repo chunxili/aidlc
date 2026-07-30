@@ -1,15 +1,11 @@
-"""基础数据初始化（FR-062、FR-068）。
+"""基础与运营配置数据初始化（FR-062、FR-068、FR-072）。
 
-幂等：全部用 ON CONFLICT，重复启动不产生重复数据。
-
-批量会员账号不是便利设施而是硬需求：FR-010 AC-1 要求 N+1 个**不同**用户
-并发领取，同一用户会被风控拦截，用手写的几个账号无法完成该验收。
-
-**首个管理员由此写入**：管理员审核他人注册，而管理员自己无法通过注册产生，
-这是自举问题，只能由初始化解决（design-plan CR-001 残余风险已记录）。
+账号与门店保持幂等更新；运营策略和设置只在尚未初始化时创建，绝不覆盖运营修改。
 """
 
 from __future__ import annotations
+
+import json
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -19,12 +15,8 @@ from .db import SessionLocal
 from .passwords import hash_password
 from .store_data import STORES
 
-# 所有初始账号的统一口令。仅用于本地与演示环境；上线前必须强制改密。
 DEFAULT_PASSWORD = "Coupon@2026"
 
-# 各角色的具名账号。用常规姓名而非"运营小李""用户A"这类占位名：
-# 界面直接展示 display_name，占位名会让成品看起来像未完成的样例数据。
-# (账号, 姓名, 角色, 手机号, 门店编码)
 NAMED_USERS: list[tuple[str, str, str, str, str | None]] = [
     ("admin001", "张岚", "ADMIN", "13800000001", None),
     ("op001", "李彦", "OPERATOR", "13800000002", None),
@@ -52,6 +44,39 @@ PENDING_APPLICANTS: list[tuple[str, str, str, str, str | None]] = [
     ("op102", "钟晴", "OPERATOR", "13700000012", None),
 ]
 
+DEFAULT_AUDIENCE_THRESHOLDS = {
+    "new_user_days": 7,
+    "active_days": 7,
+    "dormant_days": 30,
+    "redeem_sample_size": 3,
+    "high_redeem_rate": 60,
+    "low_redeem_rate": 20,
+}
+
+DEFAULT_ALERT_SETTINGS = {
+    "quota_usage": {"enabled": True, "threshold": 0.8},
+    "exhaustion_hours": {"enabled": True, "threshold": 2.0},
+    "claim_growth": {"enabled": True, "threshold": 1.0},
+    "risk_rate": {"enabled": True, "threshold": 0.1},
+    "pending_risks": {"enabled": True, "threshold": 20.0},
+    "redeem_rate_gap": {"enabled": True, "threshold": 0.2},
+}
+
+_FACTOR_WEIGHTS = {
+    "frequency": 40,
+    "new_account": 15,
+    "low_redeem": 15,
+    "unused_coupons": 10,
+    "risk_history": 20,
+    "high_value": 10,
+}
+
+DEFAULT_RISK_POLICIES = (
+    ("低保护", "LOW", 15, 50, 80),
+    ("中保护", "MEDIUM", 10, 40, 70),
+    ("高保护", "HIGH", 7, 30, 60),
+)
+
 _UPSERT_STORE = text(
     "INSERT INTO stores(code, name, district, address)"
     " VALUES (:code, :name, :district, :address)"
@@ -76,6 +101,14 @@ _UPSERT_USER = text(
     "     store_id = EXCLUDED.store_id"
 )
 
+_INSERT_POLICY = text(
+    "INSERT INTO risk_policies(name,level,is_global_default,hard_rules,factor_weights,"
+    " review_threshold,block_threshold,created_by,updated_by)"
+    " VALUES (:name,:level,false,CAST(:hard_rules AS jsonb),CAST(:factor_weights AS jsonb),"
+    " :review_threshold,:block_threshold,:operator_id,:operator_id)"
+    " ON CONFLICT (name) DO NOTHING"
+)
+
 
 def seed_stores(db: Session) -> int:
     for code, name, district, address in STORES:
@@ -91,7 +124,6 @@ def seed_users(db: Session, normal_user_count: int | None = None) -> dict[str, i
         normal_user_count = get_settings().seed_normal_user_count
 
     before = db.execute(text("SELECT count(*) FROM users")).scalar_one()
-    # 所有初始账号共用同一口令杂凑，避免为 200 个账号各跑一次 scrypt（每次约 70ms）
     shared_hash = hash_password(DEFAULT_PASSWORD)
 
     for username, display_name, role, phone, store_code in NAMED_USERS:
@@ -142,12 +174,68 @@ def seed_users(db: Session, normal_user_count: int | None = None) -> dict[str, i
     return {"before": before, "after": after, "inserted": after - before}
 
 
+def seed_operator_settings(db: Session) -> dict[str, int]:
+    """仅首次创建默认策略与单例设置，后续启动绝不覆盖运营修改。"""
+    existing = db.execute(text("SELECT count(*) FROM operator_settings WHERE id=1")).scalar_one()
+    if existing:
+        return {
+            "risk_policies": db.execute(text("SELECT count(*) FROM risk_policies")).scalar_one(),
+            "operator_settings": 1,
+        }
+
+    operator_id = db.execute(text("SELECT id FROM users WHERE username='op001'")).scalar_one()
+    for name, level, hard_threshold, review_threshold, block_threshold in DEFAULT_RISK_POLICIES:
+        db.execute(
+            _INSERT_POLICY,
+            {
+                "name": name,
+                "level": level,
+                "hard_rules": json.dumps(
+                    {"window_seconds": 10, "hard_threshold": hard_threshold},
+                    ensure_ascii=False,
+                ),
+                "factor_weights": json.dumps(_FACTOR_WEIGHTS, ensure_ascii=False),
+                "review_threshold": review_threshold,
+                "block_threshold": block_threshold,
+                "operator_id": operator_id,
+            },
+        )
+
+    medium_id = db.execute(
+        text("SELECT id FROM risk_policies WHERE level='MEDIUM' ORDER BY id LIMIT 1")
+    ).scalar_one()
+    db.execute(text("UPDATE risk_policies SET is_global_default=false WHERE is_global_default"))
+    db.execute(
+        text("UPDATE risk_policies SET is_global_default=true WHERE id=:id"), {"id": medium_id}
+    )
+    db.execute(
+        text(
+            "INSERT INTO operator_settings(id,audience_thresholds,default_risk_policy_id,"
+            " alert_settings,version,updated_by)"
+            " VALUES (1,CAST(:audience AS jsonb),:policy_id,CAST(:alerts AS jsonb),1,:operator_id)"
+            " ON CONFLICT (id) DO NOTHING"
+        ),
+        {
+            "audience": json.dumps(DEFAULT_AUDIENCE_THRESHOLDS, ensure_ascii=False),
+            "policy_id": medium_id,
+            "alerts": json.dumps(DEFAULT_ALERT_SETTINGS, ensure_ascii=False),
+            "operator_id": operator_id,
+        },
+    )
+    db.commit()
+    return {
+        "risk_policies": db.execute(text("SELECT count(*) FROM risk_policies")).scalar_one(),
+        "operator_settings": db.execute(text("SELECT count(*) FROM operator_settings")).scalar_one(),
+    }
+
+
 def run_seed() -> dict[str, int]:
     db = SessionLocal()
     try:
-        stores = seed_stores(db)  # 门店须先于用户：核销员账号引用门店编码
+        stores = seed_stores(db)
         result = seed_users(db)
         result["stores"] = stores
+        result.update(seed_operator_settings(db))
         return result
     finally:
         db.close()
