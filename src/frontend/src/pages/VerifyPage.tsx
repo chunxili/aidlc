@@ -23,14 +23,13 @@ import { ApiError, api } from '../api/client'
 import { COUPON_TYPE_LABEL, ERROR_MESSAGE } from '../api/types'
 import type { RedeemCheck, RedeemResult } from '../api/types'
 import { PageHeader } from '../components/PageHeader'
+import { QrScanModal } from '../components/QrScanModal'
+import { CODE_CLEAN_RE, CODE_LENGTH } from '../utils/couponCode'
 
 type Outcome =
   | { kind: 'success'; data: RedeemResult }
   | { kind: 'warning'; code: string; text: string }
   | { kind: 'error'; code: string; text: string }
-
-/** 券码字符集不含 0 O 1 I L，输入时直接过滤，减少人工录入错误 */
-const CLEAN = /[^23456789ABCDEFGHJKMNPQRSTVWXYZ]/g
 
 export default function VerifyPage() {
   const [code, setCode] = useState('')
@@ -38,6 +37,8 @@ export default function VerifyPage() {
   const [check, setCheck] = useState<RedeemCheck | null>(null)
   const [outcome, setOutcome] = useState<Outcome | null>(null)
   const [busy, setBusy] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const [scanned, setScanned] = useState(false)
   const [stats, setStats] = useState({ count: 0, discount: 0 })
 
   const reset = (clearInput = false) => {
@@ -46,20 +47,31 @@ export default function VerifyPage() {
     if (clearInput) {
       setCode('')
       setAmount(null)
+      setScanned(false)
     }
   }
 
-  const doCheck = async () => {
+  /** 扫码后立刻查验，此时 code 状态还没提交，必须显式把券码传进来 */
+  const doCheck = async (target = code) => {
     reset()
     setBusy(true)
     try {
-      setCheck(await api.get<RedeemCheck>(`/api/redemptions/${code}`))
+      setCheck(await api.get<RedeemCheck>(`/api/redemptions/${target}`))
     } catch (e) {
       const err = e as ApiError
       setOutcome({ kind: 'error', code: err.code, text: ERROR_MESSAGE[err.code] ?? err.message })
     } finally {
       setBusy(false)
     }
+  }
+
+  // 扫码只自动做到"查验"：核销不可逆，金额仍需人工录入并确认
+  const onScanned = (scannedCode: string) => {
+    setScanning(false)
+    setCode(scannedCode)
+    setScanned(true)
+    setAmount(null)
+    void doCheck(scannedCode)
   }
 
   const doRedeem = async () => {
@@ -118,18 +130,33 @@ export default function VerifyPage() {
       <Row gutter={16}>
         <Col xs={24} lg={13}>
           <Card>
-            <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-              券码
-            </Typography.Text>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 6,
+              }}
+            >
+              <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                券码
+              </Typography.Text>
+              <Button size="small" onClick={() => setScanning(true)}>
+                扫码录入
+              </Button>
+            </div>
             <Input
               className="mono"
               size="large"
-              placeholder="10 位券码"
+              placeholder={`${CODE_LENGTH} 位券码`}
               value={code}
-              maxLength={10}
-              onChange={(e) => setCode(e.target.value.toUpperCase().replace(CLEAN, ''))}
-              onPressEnter={() => code.length === 10 && doCheck()}
-              style={{ marginTop: 6, fontSize: 22, letterSpacing: 4, textAlign: 'center' }}
+              maxLength={CODE_LENGTH}
+              onChange={(e) => {
+                setCode(e.target.value.toUpperCase().replace(CODE_CLEAN_RE, ''))
+                setScanned(false)
+              }}
+              onPressEnter={() => code.length === CODE_LENGTH && doCheck()}
+              style={{ fontSize: 22, letterSpacing: 4, textAlign: 'center' }}
               autoFocus
             />
             <div
@@ -140,8 +167,10 @@ export default function VerifyPage() {
                 marginTop: 8,
               }}
             >
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {code.length}/10 · 不含 0 O 1 I L
+              <Typography.Text type={scanned ? 'success' : 'secondary'} style={{ fontSize: 12 }}>
+                {scanned
+                  ? '已由扫码录入'
+                  : `${code.length}/${CODE_LENGTH} · 不含 0 O 1 I L · 也可点右上角扫码`}
               </Typography.Text>
               <Typography.Link onClick={() => reset(true)} style={{ fontSize: 13 }}>
                 清空
@@ -152,9 +181,9 @@ export default function VerifyPage() {
               size="large"
               block
               style={{ marginTop: 16 }}
-              onClick={doCheck}
+              onClick={() => doCheck()}
               loading={busy && !check}
-              disabled={code.length !== 10}
+              disabled={code.length !== CODE_LENGTH}
             >
               查验券码
             </Button>
@@ -263,12 +292,18 @@ export default function VerifyPage() {
           {!check && !outcome && (
             <Card style={{ background: '#fafbfc', borderStyle: 'dashed' }}>
               <Typography.Paragraph type="secondary" style={{ margin: 0, fontSize: 13 }}>
-                录入券码后将显示券型、优惠内容与使用门槛，再填写本单金额即可核销。
+                扫码或手工录入券码后将显示券型、优惠内容与使用门槛，再填写本单金额即可核销。
               </Typography.Paragraph>
             </Card>
           )}
         </Col>
       </Row>
+
+      <QrScanModal
+        open={scanning}
+        onCancel={() => setScanning(false)}
+        onDetect={onScanned}
+      />
     </>
   )
 }

@@ -1,8 +1,9 @@
-import { Badge, Card, Empty, Segmented, Table, Tag, Typography } from 'antd'
+import { Badge, Button, Card, Empty, Segmented, Table, Tag, Typography } from 'antd'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { COUPON_TYPE_LABEL } from '../api/types'
 import type { Coupon, Paged } from '../api/types'
+import { CouponQrModal } from '../components/CouponQrModal'
 import { PageHeader } from '../components/PageHeader'
 
 const FILTERS = ['全部', '可用', '已核销', '已过期'] as const
@@ -52,6 +53,7 @@ export default function MyCouponsPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>('全部')
   const [counts, setCounts] = useState({ 可用: 0, 已核销: 0, 已过期: 0 })
+  const [showQr, setShowQr] = useState<Coupon | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -178,9 +180,26 @@ export default function MyCouponsPage() {
                 </Typography.Text>
               ),
             },
+            {
+              title: '出示',
+              width: 100,
+              fixed: 'right',
+              render: (_, r) => (
+                <Button
+                  size="small"
+                  type={r.display_status === '可用' ? 'primary' : 'default'}
+                  ghost={r.display_status === '可用'}
+                  onClick={() => setShowQr(r)}
+                >
+                  二维码
+                </Button>
+              ),
+            },
           ]}
         />
       </Card>
+
+      <CouponQrModal coupon={showQr} onClose={() => setShowQr(null)} />
     </>
   )
 }

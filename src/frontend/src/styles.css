@@ -29,16 +29,18 @@ body {
   overflow: hidden;
 }
 
+/* 印章式色块：不用渐变。渐变圆角方块是最常见的“脚手架 logo”痕迹。 */
 .brand__mark {
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
-  border-radius: 6px;
-  background: linear-gradient(135deg, #2f6fd0, #1b4b91);
-  color: #fff;
+  border: 1px solid rgba(27, 46, 74, 0.14);
+  border-radius: 2px;
+  background: #e7e4da;
+  color: #1b2e4a;
   font-size: 15px;
   font-weight: 700;
-  line-height: 28px;
+  line-height: 26px;
   text-align: center;
   letter-spacing: -0.5px;
 }
@@ -75,80 +77,368 @@ body {
   letter-spacing: 1px;
 }
 
-/* 登录页 */
-.auth {
-  display: grid;
-  grid-template-columns: 1.05fr 1fr;
-  min-height: 100vh;
-  background: #fff;
-}
+/* ── 登录 / 注册：一张印刷券 ────────────────────────────────
+   页面就是券本身：左边券身，右边存根（表单），中间一道真实的骑缝齿孔，
+   骑缝处盖章。全页不用任何渐变——渐变是这套界面此前最重的模板痕迹。
+   所有选择器都是单层 .tk__* 类名，避免与 antd 的类互相覆盖。         */
 
-.auth__aside {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: 40px;
-  color: #fff;
-  background: radial-gradient(circle at 18% 12%, #245aa8 0%, #132441 62%);
-}
+.tk-stage {
+  --ink: #1b2e4a;
+  --ink-soft: #566b86;
+  --stock: #f4f2eb;
+  --board: #d8d4c8;
+  --chop: #a8342a;
+  --rule: rgba(27, 46, 74, 0.16);
+  --mono: "SF Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
 
-.auth__headline {
-  max-width: 420px;
-  font-size: 30px;
-  font-weight: 600;
-  line-height: 1.45;
-}
-
-.auth__sub {
-  max-width: 420px;
-  margin-top: 14px;
-  font-size: 14px;
-  line-height: 1.85;
-  color: rgba(255, 255, 255, 0.72);
-}
-
-.auth__metrics {
-  display: flex;
-  gap: 44px;
-  margin-top: 36px;
-}
-
-.auth__metric-value {
-  font-size: 24px;
-  font-weight: 600;
-}
-
-.auth__metric-label {
-  margin-top: 2px;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.6);
-}
-
-.auth__foot {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
-}
-
-.auth__panel {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 40px;
+  min-height: 100vh;
+  padding: 32px 20px;
+  background: var(--board);
 }
 
-.auth__form {
+.tk {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
   width: 100%;
-  max-width: 344px;
+  max-width: 960px;
+  background: var(--stock);
+  box-shadow:
+    0 1px 0 rgba(27, 46, 74, 0.2),
+    0 20px 44px -30px rgba(27, 46, 74, 0.55);
+  animation: tk-rise 0.26s cubic-bezier(0.22, 0.8, 0.28, 1) both;
 }
 
-@media (max-width: 900px) {
-  .auth {
-    grid-template-columns: 1fr;
+/* 骑缝齿孔：撕线本体 + 两端冲出的半圆缺口 */
+.tk__perf {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(100% - 380px);
+  width: 1px;
+  opacity: 0.45;
+  background-image: linear-gradient(to bottom, var(--ink) 0 6px, transparent 6px 12px);
+  background-size: 1px 12px;
+}
+
+.tk__notch {
+  position: absolute;
+  left: calc(100% - 380px);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--board);
+  transform: translate(-50%, -50%);
+}
+
+.tk__notch--top {
+  top: 0;
+}
+
+.tk__notch--bottom {
+  top: 100%;
+}
+
+/* 券身左侧竖排编号带 */
+.tk__edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  border-right: 1px solid var(--rule);
+}
+
+.tk__edge-text {
+  writing-mode: vertical-rl;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.34em;
+  color: var(--ink-soft);
+}
+
+/* 券身 */
+.tk__body {
+  display: flex;
+  flex-direction: column;
+  padding: 46px 46px 30px 68px;
+  color: var(--ink);
+}
+
+.tk__over {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  color: var(--ink-soft);
+}
+
+.tk__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.tk__brand-text {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.tk__head {
+  max-width: 14em;
+  margin: 24px 0 0;
+  font-size: 33px;
+  font-weight: 800;
+  line-height: 1.36;
+  letter-spacing: -0.01em;
+}
+
+.tk__note {
+  max-width: 26em;
+  margin: 16px 0 0;
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--ink-soft);
+}
+
+/* 适用范围：像券背面的条款表，键是印刷体小字 */
+.tk__terms {
+  margin: 28px 0 0;
+  border-top: 1px solid var(--rule);
+}
+
+.tk__term {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 18px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.tk__term-k {
+  padding-top: 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--ink-soft);
+}
+
+.tk__term-v {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.tk__body-foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  margin-top: auto;
+  padding-top: 32px;
+}
+
+/* 骑缝章 */
+.tk__chop {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 88px;
+  height: 88px;
+  margin: -8px -4px -6px 0;
+  border: 2px solid var(--chop);
+  border-radius: 50%;
+  outline: 1px solid var(--chop);
+  outline-offset: 3px;
+  color: var(--chop);
+  text-align: center;
+  opacity: 0.88;
+  transform: rotate(-8deg);
+  animation: tk-stamp 0.28s cubic-bezier(0.2, 0.9, 0.3, 1) 0.42s both;
+}
+
+.tk__chop-name {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1.1;
+}
+
+.tk__chop-rule {
+  width: 40px;
+  height: 1px;
+  margin: 5px 0;
+  background: currentColor;
+}
+
+.tk__chop-sub {
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+}
+
+/* 存根 */
+.tk__stub {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 46px 40px 30px;
+}
+
+.tk__stub-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.tk__stub-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+}
+
+.tk__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tk__hint {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.tk__stub-foot {
+  margin-top: auto;
+  padding-top: 22px;
+  font-size: 13px;
+}
+
+/* 存根末尾的印刷行 */
+.tk__stub-copyright {
+  margin-top: 16px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+}
+
+@keyframes tk-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
   }
 
-  .auth__aside {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes tk-stamp {
+  from {
+    opacity: 0;
+    transform: rotate(-8deg) scale(1.55);
+  }
+
+  to {
+    opacity: 0.88;
+    transform: rotate(-8deg) scale(1);
+  }
+}
+
+/* 手机上券横着撕：券身收成一条券头（品牌 + 章），齿孔转为横向，
+   表单紧跟其下，不让文案把输入框挤到屏幕外。 */
+@media (max-width: 880px) {
+  .tk-stage {
+    padding: 20px 14px;
+  }
+
+  .tk {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 460px;
+  }
+
+  .tk__perf,
+  .tk__notch,
+  .tk__edge,
+  .tk__over,
+  .tk__head,
+  .tk__note,
+  .tk__terms {
     display: none;
+  }
+
+  .tk__body {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px 22px;
+  }
+
+  .tk__brand {
+    margin-top: 0;
+  }
+
+  .tk__body-foot {
+    margin-top: 0;
+    padding-top: 0;
+  }
+
+  .tk__chop {
+    width: 54px;
+    height: 54px;
+    margin: 0;
+  }
+
+  .tk__chop-name {
+    font-size: 11px;
+  }
+
+  .tk__chop-rule {
+    width: 24px;
+    margin: 3px 0;
+  }
+
+  .tk__chop-sub {
+    font-size: 6px;
+  }
+
+  .tk__stub {
+    padding: 26px 22px 24px;
+  }
+
+  .tk__stub::before {
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    height: 1px;
+    content: "";
+    opacity: 0.45;
+    background-image: linear-gradient(to right, var(--ink) 0 6px, transparent 6px 12px);
+    background-size: 12px 1px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tk,
+  .tk__chop {
+    animation: none;
   }
 }
 
@@ -175,4 +465,71 @@ body {
   font-size: 30px;
   font-weight: 700;
   line-height: 1.1;
+}
+
+/* 扫码取景框：视频铺满容器，叠一层取景框与扫描线做对准引导 */
+.qr-scan {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #101418;
+}
+
+.qr-scan__video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* cover 会裁掉边缘，但避免了黑边导致的取景框失真；二维码在中心区域 */
+  object-fit: cover;
+}
+
+.qr-scan__frame {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 62%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 6px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.qr-scan__frame::after {
+  position: absolute;
+  right: 6px;
+  left: 6px;
+  height: 2px;
+  content: "";
+  background: #f0b429;
+  animation: qr-sweep 2s linear infinite;
+}
+
+.qr-scan__hint {
+  position: absolute;
+  bottom: 10px;
+  left: 0;
+  width: 100%;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  text-align: center;
+}
+
+@keyframes qr-sweep {
+  from {
+    top: 4%;
+  }
+
+  to {
+    top: 96%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qr-scan__frame::after {
+    animation: none;
+  }
 }

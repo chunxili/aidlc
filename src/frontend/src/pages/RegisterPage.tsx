@@ -1,21 +1,11 @@
-import {
-  Alert,
-  Button,
-  Cascader,
-  Form,
-  Input,
-  Segmented,
-  Tabs,
-  Typography,
-  App as AntApp,
-} from 'antd'
+import { Alert, Button, Cascader, Form, Input, Segmented, App as AntApp } from 'antd'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ApiError, api } from '../api/client'
 import { landingFor, useAuth } from '../auth/AuthContext'
 import { ERROR_MESSAGE } from '../api/types'
 import type { RegisterResult, RegisterRole, Store } from '../api/types'
-import { BRAND } from '../theme'
+import { Ticket } from '../components/Ticket'
 
 const ROLE_OPTIONS: { value: RegisterRole; label: string; hint: string }[] = [
   { value: 'USER', label: '会员', hint: '注册后即可领取和使用优惠券' },
@@ -84,33 +74,12 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="auth">
-      <aside className="auth__aside">
-        <div className="brand" style={{ padding: 0 }}>
-          <span className="brand__mark">惠</span>
-          <span className="brand__text">{BRAND.full}</span>
-        </div>
-        <div>
-          <div className="auth__headline">加入我们</div>
-          <div className="auth__sub">
-            会员注册后即可领券；门店核销员与运营人员的账号需经管理员审核，
-            以确保门店归属与投放权限准确无误。
-          </div>
-        </div>
-        <div className="auth__foot">© 2026 {BRAND.full}</div>
-      </aside>
-
-      <main className="auth__panel">
-        <div className="auth__form" style={{ maxWidth: 380 }}>
-          <Tabs
-            activeKey="register"
-            onChange={(k) => k === 'login' && navigate('/login')}
-            items={[
-              { key: 'login', label: '登录' },
-              { key: 'register', label: '注册' },
-            ]}
-          />
-
+    <Ticket
+      headline="先领一个账号，再领券"
+      stubTitle="注册"
+      stubAction={<Link to="/login">已有账号，去登录</Link>}
+      stub={
+        <>
           <Segmented
             block
             value={role}
@@ -190,18 +159,19 @@ export default function RegisterPage() {
               <Input.Password placeholder="再次输入密码" autoComplete="new-password" />
             </Form.Item>
 
-            <Form.Item style={{ marginBottom: 16 }}>
+            <Form.Item style={{ marginBottom: 0 }}>
               <Button type="primary" htmlType="submit" block loading={loading}>
                 {role === 'USER' ? '注册并登录' : '提交申请'}
               </Button>
             </Form.Item>
           </Form>
-
-          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            已有账号？<Link to="/login">直接登录</Link>
-          </Typography.Text>
-        </div>
-      </main>
-    </div>
+        </>
+      }
+    >
+      <p className="tk__note">
+        会员注册后立刻能领券。门店核销员要选所属门店，运营人员要说明投放范围，
+        这两类账号提交后由管理员审核，通过前无法登录。
+      </p>
+    </Ticket>
   )
 }
