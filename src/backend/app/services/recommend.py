@@ -144,3 +144,102 @@ def recommend(db: Session, user_id: int, limit: int | None = None) -> Recommenda
         degrade_reason=result.degrade_reason,
         cold_start=cold_start,
     )
+
+
+PROMPT_VERSION_NEED = "recommend-need-v1"
+
+
+def _need_matches(need: str, c: Campaign) -> bool:
+    """降级路径下的粗匹配：品类标签或活动名与需求文本有交集即视为相关。"""
+    label = CATEGORY_LABEL.get(c.category, c.category)
+    if label and label in need:
+        return True
+    name = c.name or ""
+    return bool(name) and (need in name or name in need)
+
+
+def recommend_by_need(
+    db: Session, user_id: int, need: str, limit: int | None = None
+) -> RecommendationOut:
+    """按用户自述需求，从全部可领券中用 AI 匹配推荐（FR-040 扩展）。
+
+    复用 recommend() 的四段式：确定性召回 → AI 重排 → 白名单校验 → 降级兜底。
+    差异：候选集尽量覆盖全部可领券，提示词纳入用户需求文本；降级时按
+    "关键词命中 + 热度"排序，使结果仍与需求相关。"列表非空"仍是硬保证（FR-041）。
+    """
+    settings = get_settings()
+    limit = limit or settings.recommend_result_limit
+
+    available = list_available_for_user(db, user_id)[: settings.recommend_need_candidate_limit]
+    if not available:
+        return RecommendationOut(
+            items=[], degraded=False, degrade_reason=None, cold_start=False, analysis=None
+        )
+
+    by_id = {c.id: c for c, _ in available}
+    features = _user_features(db, user_id)
+    cold_start = bool(features["cold_start"])
+
+    payload = dict(features)
+    payload["need"] = need
+    payload["limit"] = limit
+    payload["candidates"] = "\n".join(
+        f"- id={c.id}, 名称={c.name}, 品类={CATEGORY_LABEL.get(c.category, c.category)},"
+        f" 面额={c.face_value}, 剩余={c.total_stock - c.claimed_count}"
+        for c in by_id.values()
+    )
+    result = bedrock.recommend_by_need(db, user_id, payload, set(by_id), PROMPT_VERSION_NEED)
+
+    if result.ok and result.parsed:
+        items = [
+            RecommendationItem(
+                campaign_id=cid,
+                campaign_name=by_id[cid].name,
+                category=by_id[cid].category,
+                coupon_type=by_id[cid].coupon_type,
+                face_value=by_id[cid].face_value,
+                benefit_text=pricing.describe(by_id[cid]),
+                remaining_stock=by_id[cid].total_stock - by_id[cid].claimed_count,
+                reason=it.get("reason") or _template_reason(by_id[cid], cold_start),
+            )
+            for it in result.parsed["items"]
+            if (cid := it.get("campaign_id")) in by_id
+        ][:limit]
+        if items:
+            return RecommendationOut(
+                items=items,
+                degraded=False,
+                degrade_reason=None,
+                cold_start=cold_start,
+                analysis=(result.parsed.get("analysis") or None),
+            )
+        result = bedrock.AiResult(
+            False, None, bedrock.REASON_ID_NOT_IN_WHITELIST, result.invocation_id, result.latency_ms
+        )
+
+    # 降级：关键词命中优先，其次热度。
+    pop = _popularity(db, list(by_id))
+    ordered = sorted(
+        by_id.values(),
+        key=lambda c: (_need_matches(need, c), pop.get(c.id, 0.0)),
+        reverse=True,
+    )[:limit]
+    return RecommendationOut(
+        items=[
+            RecommendationItem(
+                campaign_id=c.id,
+                campaign_name=c.name,
+                category=c.category,
+                coupon_type=c.coupon_type,
+                face_value=c.face_value,
+                benefit_text=pricing.describe(c),
+                remaining_stock=c.total_stock - c.claimed_count,
+                reason=_template_reason(c, cold_start),
+            )
+            for c in ordered
+        ],
+        degraded=True,
+        degrade_reason=result.degrade_reason,
+        cold_start=cold_start,
+        analysis="AI 暂不可用，已按关键词与热度为你匹配相关优惠",
+    )

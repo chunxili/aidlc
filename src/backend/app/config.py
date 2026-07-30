@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     # ---- 推荐（FR-040）----
     recommend_candidate_limit: int = 20
     recommend_result_limit: int = 5
+    # 「按需求找券」召回上限：比自动推荐更大，尽量覆盖全部可领券作为候选（FR-040 扩展）
+    recommend_need_candidate_limit: int = 40
 
     @property
     def ai_configured(self) -> bool:

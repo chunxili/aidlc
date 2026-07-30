@@ -153,6 +153,8 @@ export interface RecommendationResult {
   degraded: boolean
   degrade_reason: string | null
   cold_start: boolean
+  /** AI 对用户需求的理解概述，仅「按需求找券」接口返回；自动推荐为 null/缺省 */
+  analysis?: string | null
 }
 
 export interface RedeemCheck {

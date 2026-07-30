@@ -56,10 +56,14 @@ export default function MyCouponsPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const qs = filter === '全部' ? '' : `?display_status=${encodeURIComponent(filter)}`
+      const params = new URLSearchParams({ page_size: '50' })
+      if (filter !== '全部') params.set('display_status', filter)
+      // page_size 上限由后端约束为 100（le=100）。此处取满 100 用于统计各状态数量，
+      // 超过 100 会返回 422 并使整个 Promise.all 失败、列表空白 —— 这正是"我的优惠券
+      // 一张都不显示"的根因。演示规模下单用户券数远小于 100，统计足够准确。
       const [page, all] = await Promise.all([
-        api.get<Paged<Coupon>>(`/api/coupons/my${qs}&page_size=50`.replace('?&', '?')),
-        api.get<Paged<Coupon>>('/api/coupons/my?page_size=200'),
+        api.get<Paged<Coupon>>(`/api/coupons/my?${params.toString()}`),
+        api.get<Paged<Coupon>>('/api/coupons/my?page_size=100'),
       ])
       setData(page)
       setCounts({

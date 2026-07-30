@@ -397,3 +397,85 @@ def recommend(
         db, "RECOMMEND", prompt_version, features, text, parsed, latency, reason, user_id
     )
     return AiResult(reason is None and parsed is not None, parsed, reason, invocation_id, latency)
+
+
+# ---------- 按需求推荐用途 ----------
+
+RECOMMEND_BY_NEED_PROMPT = """你是优惠券推荐引擎。用户用一句话描述了他的需求，请理解需求，并从候选活动中挑选最匹配的若干个，逐一说明为何匹配。
+
+用户需求（用户原话）：{need}
+
+用户画像（辅助参考，不要凌驾于需求之上）：
+- 历史领券次数：{claim_count}
+- 历史核销次数：{used_count}
+- 偏好品类分布：{category_preference}
+- 是否新用户（无历史行为）：{cold_start}
+
+候选活动（**只能从这些 id 中挑选，禁止编造**）：
+{candidates}
+
+请只输出 JSON，不要任何额外文字。items 最多 {limit} 项，按与需求的匹配度从高到低排序；
+analysis 用一句中文概述你对用户需求的理解：
+{{"analysis": "<一句中文，概述理解到的需求>", "items": [{{"campaign_id": <候选中的 id>, "reason": "<一句中文理由，说明为何匹配该需求>"}}]}}
+"""
+
+RECOMMEND_BY_NEED_MAX_TOKENS = 900
+
+
+def recommend_by_need(
+    db: Session,
+    user_id: int,
+    features: dict[str, Any],
+    candidate_ids: set[int],
+    prompt_version: str,
+) -> AiResult:
+    """按用户自述需求调用 AI 匹配候选集。
+
+    与 recommend() 同样做**逐个 id 白名单校验**，并额外解析 analysis（AI 对需求的理解）。
+    """
+    settings = get_settings()
+    started = time.perf_counter()
+    text, reason = _converse_with_deadline(
+        RECOMMEND_BY_NEED_PROMPT.format(**features),
+        settings.bedrock_recommend_timeout_seconds,
+        settings.bedrock_recommend_max_retries,
+        max_tokens=RECOMMEND_BY_NEED_MAX_TOKENS,
+    )
+    latency = int((time.perf_counter() - started) * 1000)
+
+    parsed: dict[str, Any] | None = None
+    if reason is None and text is not None:
+        obj = _extract_json(text)
+        if obj is None:
+            reason = REASON_INVALID_JSON
+        elif not isinstance(obj.get("items"), list):
+            reason = REASON_SCHEMA_INVALID
+        else:
+            kept: list[dict[str, Any]] = []
+            dropped = 0
+            for item in obj["items"]:
+                if not isinstance(item, dict) or "campaign_id" not in item:
+                    dropped += 1
+                    continue
+                try:
+                    cid = int(item["campaign_id"])
+                except (TypeError, ValueError):
+                    dropped += 1
+                    continue
+                if cid not in candidate_ids:
+                    dropped += 1
+                    continue
+                kept.append({"campaign_id": cid, "reason": str(item.get("reason") or "").strip()})
+            if not kept:
+                reason = REASON_ID_NOT_IN_WHITELIST
+            else:
+                parsed = {
+                    "items": kept,
+                    "dropped": dropped,
+                    "analysis": str(obj.get("analysis") or "").strip(),
+                }
+
+    invocation_id = _log_invocation(
+        db, "RECOMMEND", prompt_version, features, text, parsed, latency, reason, user_id
+    )
+    return AiResult(reason is None and parsed is not None, parsed, reason, invocation_id, latency)
