@@ -24,6 +24,10 @@ class UserOut(BaseModel):
 
 class LoginIn(BaseModel):
     username: str
+    # 需求 4.7 允许使用 Mock 用户，本项目不实现密码体系，故此字段**不做校验**。
+    # 保留它是为了让登录界面具备常规形态；界面上明示"当前环境未启用密码校验"，
+    # 不制造"已校验"的错觉。
+    password: str | None = None
 
 
 class LoginOut(BaseModel):

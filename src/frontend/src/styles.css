@@ -1,0 +1,178 @@
+:root {
+  --page-max: 1360px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 品牌标识 */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 16px;
+  color: #fff;
+  overflow: hidden;
+}
+
+.brand__mark {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #2f6fd0, #1b4b91);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 28px;
+  text-align: center;
+  letter-spacing: -0.5px;
+}
+
+.brand__text {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+/* 页头 */
+.page-head {
+  margin-bottom: 16px;
+}
+
+.page-head__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 30px;
+  color: #1c2434;
+}
+
+.page-head__desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #6b7488;
+}
+
+/* 券码等定宽内容 */
+.mono {
+  font-family: "SF Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+  letter-spacing: 1px;
+}
+
+/* 登录页 */
+.auth {
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+  min-height: 100vh;
+  background: #fff;
+}
+
+.auth__aside {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 40px;
+  color: #fff;
+  background: radial-gradient(circle at 18% 12%, #245aa8 0%, #132441 62%);
+}
+
+.auth__headline {
+  max-width: 420px;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.auth__sub {
+  max-width: 420px;
+  margin-top: 14px;
+  font-size: 14px;
+  line-height: 1.85;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.auth__metrics {
+  display: flex;
+  gap: 44px;
+  margin-top: 36px;
+}
+
+.auth__metric-value {
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.auth__metric-label {
+  margin-top: 2px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.auth__foot {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.auth__panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.auth__form {
+  width: 100%;
+  max-width: 344px;
+}
+
+@media (max-width: 900px) {
+  .auth {
+    grid-template-columns: 1fr;
+  }
+
+  .auth__aside {
+    display: none;
+  }
+}
+
+/* 券卡片 */
+.coupon-card {
+  position: relative;
+  overflow: hidden;
+  border-left: 3px solid #1b4b91;
+}
+
+.coupon-card__amount {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  color: #c0362c;
+}
+
+.coupon-card__symbol {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.coupon-card__value {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.1;
+}

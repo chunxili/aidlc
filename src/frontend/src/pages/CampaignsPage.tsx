@@ -1,15 +1,4 @@
-/**
- * 活动管理。
- *
- * 表单要点：
- * - 有效时长用「数值 + 单位」输入，提交时统一换算为分钟：既照顾运营按天填写的习惯，
- *   也保留分钟粒度以支持 SC-003 现场演示（建 1 分钟有效期的活动）
- * - 编辑时面额与有效时长置灰：已领出券的 expires_at 已落库（ADR-003）
- * - 库存最小值绑定为当前值，前端即阻止调低（后端仍会校验）
- */
-
 import {
-  Alert,
   Button,
   Card,
   DatePicker,
@@ -17,39 +6,44 @@ import {
   Form,
   Input,
   InputNumber,
+  Progress,
+  Segmented,
   Select,
   Space,
   Table,
   Tag,
-  Tooltip,
   Typography,
-  message,
+  App as AntApp,
 } from 'antd'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import dayjs from 'dayjs'
 import { ApiError, api } from '../api/client'
 import { CATEGORY_LABEL, ERROR_MESSAGE } from '../api/types'
-import type { Campaign, Paged } from '../api/types'
+import type { Campaign, CampaignStatus, Paged } from '../api/types'
+import { PageHeader } from '../components/PageHeader'
 
-const STATUS_TAG: Record<Campaign['status'], { color: string; text: string }> = {
+const STATUS: Record<CampaignStatus, { color: string; text: string }> = {
   PENDING: { color: 'default', text: '未开始' },
   ACTIVE: { color: 'green', text: '进行中' },
   ENDED: { color: 'red', text: '已结束' },
 }
 
 const UNIT_MINUTES = { minute: 1, hour: 60, day: 1440 }
+const FILTERS = ['全部', 'ACTIVE', 'PENDING', 'ENDED'] as const
 
 export default function CampaignsPage() {
+  const { message } = AntApp.useApp()
   const [data, setData] = useState<Paged<Campaign> | null>(null)
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState<Campaign | null>(null)
   const [open, setOpen] = useState(false)
+  const [filter, setFilter] = useState<(typeof FILTERS)[number]>('全部')
   const [form] = Form.useForm()
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setData(await api.get<Paged<Campaign>>('/api/campaigns?page_size=50'))
+      setData(await api.get<Paged<Campaign>>('/api/campaigns?page_size=100'))
     } finally {
       setLoading(false)
     }
@@ -59,14 +53,29 @@ export default function CampaignsPage() {
     void load()
   }, [load])
 
+  const rows = useMemo(() => {
+    const items = data?.items ?? []
+    return filter === '全部' ? items : items.filter((c) => c.status === filter)
+  }, [data, filter])
+
+  const summary = useMemo(() => {
+    const items = data?.items ?? []
+    return {
+      active: items.filter((c) => c.status === 'ACTIVE').length,
+      stock: items.reduce((s, c) => s + c.total_stock, 0),
+      claimed: items.reduce((s, c) => s + c.claimed_count, 0),
+    }
+  }, [data])
+
   const openCreate = () => {
     setEditing(null)
+    form.resetFields()
     form.setFieldsValue({
       category: 'FOOD',
       face_value: 20,
       total_stock: 100,
       per_user_limit: 1,
-      validity_value: 1,
+      validity_value: 7,
       validity_unit: 'day',
       range: [dayjs(), dayjs().add(7, 'day')],
     })
@@ -75,6 +84,7 @@ export default function CampaignsPage() {
 
   const openEdit = (c: Campaign) => {
     setEditing(c)
+    form.resetFields()
     form.setFieldsValue({
       name: c.name,
       category: c.category,
@@ -121,108 +131,151 @@ export default function CampaignsPage() {
   }
 
   return (
-    <Card
-      title="活动管理"
-      extra={
-        <Button type="primary" onClick={openCreate}>
-          创建活动
-        </Button>
-      }
-    >
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message="库存只能调高：调低会使已领取数超过总库存，破坏库存守恒。面额与有效时长在创建后不可修改。"
-      />
-      <Table
-        rowKey="id"
-        loading={loading}
-        dataSource={data?.items ?? []}
-        pagination={false}
-        columns={[
-          { title: '活动', dataIndex: 'name' },
-          {
-            title: '品类',
-            dataIndex: 'category',
-            render: (v: Campaign['category']) => <Tag>{CATEGORY_LABEL[v]}</Tag>,
-          },
-          { title: '面额', dataIndex: 'face_value', render: (v: string) => `¥${v}` },
-          {
-            title: '状态',
-            dataIndex: 'status',
-            render: (v: Campaign['status']) => (
-              <Tooltip title="状态由起止时间实时派生，数据库中不存储该字段">
-                <Tag color={STATUS_TAG[v].color}>{STATUS_TAG[v].text}</Tag>
-              </Tooltip>
-            ),
-          },
-          {
-            title: '库存',
-            render: (_, r) => `${r.claimed_count} / ${r.total_stock}（剩 ${r.remaining_stock}）`,
-          },
-          { title: '每人限领', dataIndex: 'per_user_limit' },
-          {
-            title: '领取后有效',
-            dataIndex: 'validity_minutes',
-            render: (v: number) =>
-              v < 60 ? `${v} 分钟` : v < 1440 ? `${Math.round(v / 60)} 小时` : `${Math.round(v / 1440)} 天`,
-          },
-          {
-            title: '结束时间',
-            dataIndex: 'end_at',
-            render: (v: string) => new Date(v).toLocaleString(),
-          },
-          {
-            title: '操作',
-            render: (_, r) => (
-              <Button size="small" onClick={() => openEdit(r)}>
-                编辑
-              </Button>
-            ),
-          },
-        ]}
-      />
-
-      <Drawer
-        title={editing ? `编辑活动：${editing.name}` : '创建活动'}
-        open={open}
-        onClose={() => setOpen(false)}
-        width={480}
+    <>
+      <PageHeader
+        title="活动管理"
+        description={`进行中 ${summary.active} 个 · 累计投放 ${summary.stock} 张 · 已领取 ${summary.claimed} 张`}
         extra={
-          <Button type="primary" onClick={submit}>
-            提交
+          <Button type="primary" onClick={openCreate}>
+            创建活动
           </Button>
         }
+      />
+
+      <Card
+        extra={
+          <Segmented
+            size="small"
+            value={filter}
+            onChange={(v) => setFilter(v as never)}
+            options={FILTERS.map((f) => ({
+              value: f,
+              label: f === '全部' ? '全部' : STATUS[f as CampaignStatus].text,
+            }))}
+          />
+        }
       >
-        <Form form={form} layout="vertical">
-          <Form.Item name="name" label="活动名称" rules={[{ required: true }]}>
-            <Input placeholder="例如 周末餐饮券" />
+        <Table
+          rowKey="id"
+          loading={loading}
+          dataSource={rows}
+          pagination={false}
+          scroll={{ x: 1020 }}
+          columns={[
+            {
+              title: '活动名称',
+              dataIndex: 'name',
+              fixed: 'left',
+              width: 200,
+              ellipsis: true,
+              render: (v: string, r) => (
+                <div>
+                  <Typography.Text strong>{v}</Typography.Text>
+                  <div>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {CATEGORY_LABEL[r.category]} · 每人限领 {r.per_user_limit} 张
+                    </Typography.Text>
+                  </div>
+                </div>
+              ),
+            },
+            {
+              title: '面额',
+              dataIndex: 'face_value',
+              width: 90,
+              align: 'right',
+              render: (v: string) => <Typography.Text strong>¥{Number(v)}</Typography.Text>,
+            },
+            {
+              title: '状态',
+              dataIndex: 'status',
+              width: 90,
+              render: (v: CampaignStatus) => <Tag color={STATUS[v].color}>{STATUS[v].text}</Tag>,
+            },
+            {
+              title: '领取进度',
+              width: 200,
+              render: (_, r) => (
+                <div>
+                  <Progress
+                    percent={Math.round((r.claimed_count / r.total_stock) * 100)}
+                    size="small"
+                    strokeColor="#1b4b91"
+                  />
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {r.claimed_count} / {r.total_stock} 张，剩 {r.remaining_stock}
+                  </Typography.Text>
+                </div>
+              ),
+            },
+            {
+              title: '领取后有效期',
+              dataIndex: 'validity_minutes',
+              width: 120,
+              render: (v: number) =>
+                v < 60 ? `${v} 分钟` : v < 1440 ? `${Math.round(v / 60)} 小时` : `${Math.round(v / 1440)} 天`,
+            },
+            {
+              title: '活动时间',
+              width: 190,
+              render: (_, r) => (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {dayjs(r.start_at).format('MM-DD HH:mm')} 至 {dayjs(r.end_at).format('MM-DD HH:mm')}
+                </Typography.Text>
+              ),
+            },
+            {
+              title: '操作',
+              width: 80,
+              fixed: 'right',
+              render: (_, r) => (
+                <Typography.Link onClick={() => openEdit(r)}>编辑</Typography.Link>
+              ),
+            },
+          ]}
+        />
+      </Card>
+
+      <Drawer
+        title={editing ? '编辑活动' : '创建活动'}
+        open={open}
+        onClose={() => setOpen(false)}
+        width={460}
+        footer={
+          <Space style={{ float: 'right' }}>
+            <Button onClick={() => setOpen(false)}>取消</Button>
+            <Button type="primary" onClick={submit}>
+              保存
+            </Button>
+          </Space>
+        }
+      >
+        <Form form={form} layout="vertical" requiredMark={false}>
+          <Form.Item name="name" label="活动名称" rules={[{ required: true, message: '请输入活动名称' }]}>
+            <Input placeholder="例如：周末餐饮满减" />
           </Form.Item>
-          <Form.Item name="category" label="品类" rules={[{ required: true }]}
-            extra="品类是 AI 生成推荐理由的语义来源，缺了它 AI 只能说面额大小">
+          <Form.Item name="category" label="优惠品类" rules={[{ required: true }]}>
             <Select
               options={Object.entries(CATEGORY_LABEL).map(([value, label]) => ({ value, label }))}
             />
           </Form.Item>
 
-          {!editing && (
+          {!editing ? (
             <>
               <Form.Item name="face_value" label="面额（元）" rules={[{ required: true }]}>
-                <InputNumber min={0.01} style={{ width: '100%' }} />
+                <InputNumber min={0.01} precision={2} style={{ width: '100%' }} />
               </Form.Item>
               <Form.Item name="range" label="活动起止时间" rules={[{ required: true }]}>
                 <DatePicker.RangePicker showTime style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item label="领取后有效时长" required
-                extra="选「分钟」可现场演示「过期券核销」：建 1 分钟有效期的活动，领取后等 1 分钟即可">
+              <Form.Item label="领取后有效期" required>
                 <Space.Compact style={{ width: '100%' }}>
                   <Form.Item name="validity_value" noStyle rules={[{ required: true }]}>
-                    <InputNumber min={1} style={{ width: '60%' }} />
+                    <InputNumber min={1} style={{ width: '62%' }} />
                   </Form.Item>
                   <Form.Item name="validity_unit" noStyle rules={[{ required: true }]}>
                     <Select
-                      style={{ width: '40%' }}
+                      style={{ width: '38%' }}
                       options={[
                         { value: 'minute', label: '分钟' },
                         { value: 'hour', label: '小时' },
@@ -233,15 +286,12 @@ export default function CampaignsPage() {
                 </Space.Compact>
               </Form.Item>
             </>
-          )}
-
-          {editing && (
+          ) : (
             <>
-              <Form.Item label="面额（元）" extra="创建后不可修改">
+              <Form.Item label="面额（元）">
                 <InputNumber value={Number(editing.face_value)} disabled style={{ width: '100%' }} />
               </Form.Item>
-              <Form.Item label="领取后有效时长（分钟）"
-                extra="创建后不可修改：已领出券的过期时间已落库，改动会使同一活动内的券遵循两套规则">
+              <Form.Item label="领取后有效期（分钟）">
                 <InputNumber value={editing.validity_minutes} disabled style={{ width: '100%' }} />
               </Form.Item>
               <Form.Item name="end_at" label="结束时间" rules={[{ required: true }]}>
@@ -252,20 +302,17 @@ export default function CampaignsPage() {
 
           <Form.Item
             name="total_stock"
-            label="库存"
+            label="投放库存"
             rules={[{ required: true }]}
-            extra={editing ? `只能调高，当前 ${editing.total_stock}` : undefined}
+            extra={editing ? '库存仅支持追加' : undefined}
           >
             <InputNumber min={editing ? editing.total_stock : 1} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="per_user_limit" label="每用户限领数" rules={[{ required: true }]}>
-            <InputNumber min={1} style={{ width: '100%' }} />
+          <Form.Item name="per_user_limit" label="每人限领" rules={[{ required: true }]}>
+            <InputNumber min={1} style={{ width: '100%' }} addonAfter="张" />
           </Form.Item>
         </Form>
-        <Typography.Text type="secondary">
-          创建活动不会预生成任何券记录：券在用户领取那一刻才诞生。
-        </Typography.Text>
       </Drawer>
-    </Card>
+    </>
   )
 }

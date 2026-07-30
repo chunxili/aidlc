@@ -1,9 +1,7 @@
 /**
  * 角色路由守卫。
  *
- * **守卫是体验层，不是安全层。** 真正的授权在后端（FR-061）：
- * 前端隐藏入口不构成保护。演示时需说明这一点，否则"四个角色"
- * 会被理解为四个前端页面。
+ * 仅控制界面可达性；接口权限由后端独立校验，前端不承担安全职责。
  */
 
 import { Result, Spin } from 'antd'
@@ -18,8 +16,8 @@ export function RequireRole({ roles, children }: { roles: Role[]; children: Reac
 
   if (loading) {
     return (
-      <div style={{ padding: 80, textAlign: 'center' }}>
-        <Spin size="large" tip="加载中…" />
+      <div style={{ padding: 96, textAlign: 'center' }}>
+        <Spin size="large" />
       </div>
     )
   }
@@ -27,13 +25,7 @@ export function RequireRole({ roles, children }: { roles: Role[]; children: Reac
     return <Navigate to="/login" state={{ from: location.pathname }} replace />
   }
   if (!roles.includes(user.role)) {
-    return (
-      <Result
-        status="403"
-        title="403"
-        subTitle="当前角色无权访问该页面。后端同样会拒绝越权请求。"
-      />
-    )
+    return <Result status="403" title="无访问权限" subTitle="当前账号无权查看该页面" />
   }
   return <>{children}</>
 }

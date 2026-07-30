@@ -13,20 +13,23 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import SessionLocal
 
-# 演示流程用的具名账号（对应竞赛演示 a~f 的角色）
+# 各角色的具名账号。用常规姓名而非"运营小李""用户A"这类占位名：
+# 界面会直接展示 display_name，占位名会让成品看起来像未完成的样例数据。
 NAMED_USERS: list[tuple[str, str, str]] = [
-    ("op001", "运营小李", "OPERATOR"),
-    ("verifier001", "核销员小王", "VERIFIER"),
-    ("admin001", "管理员小张", "ADMIN"),
-    ("user_a", "用户A", "USER"),
-    ("user_b", "用户B", "USER"),
-    ("user_c", "用户C", "USER"),
+    ("op001", "李彦", "OPERATOR"),
+    ("verifier001", "王磊", "VERIFIER"),
+    ("admin001", "张岚", "ADMIN"),
+    ("user_a", "陈嘉", "USER"),
+    ("user_b", "周宁", "USER"),
+    ("user_c", "孙涛", "USER"),
 ]
 
+# display_name 用 DO UPDATE 而非 DO NOTHING：既保持幂等，又能在改动展示名后
+# 让已存在的账号同步更新，避免库里残留旧的占位名。
 _INSERT = text(
     "INSERT INTO users(username, display_name, role)"
     " VALUES (:username, :display_name, :role)"
-    " ON CONFLICT (username) DO NOTHING"
+    " ON CONFLICT (username) DO UPDATE SET display_name = EXCLUDED.display_name"
 )
 
 
@@ -41,7 +44,7 @@ def seed_users(db: Session, normal_user_count: int | None = None) -> dict[str, i
         db.execute(_INSERT, {"username": username, "display_name": display_name, "role": role})
 
     batch = [
-        {"username": f"user{i:03d}", "display_name": f"压测用户{i:03d}", "role": "USER"}
+        {"username": f"user{i:03d}", "display_name": f"会员{i:03d}", "role": "USER"}
         for i in range(1, normal_user_count + 1)
     ]
     if batch:

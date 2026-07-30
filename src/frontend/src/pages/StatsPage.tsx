@@ -1,33 +1,38 @@
-/**
- * 统计面板。三层：全局卡片 → 活动明细 → 对账区。
- *
- * 两个比率旁的口径说明**直接取后端返回的 *_basis 字段**，不在前端硬编码，
- * 避免前后端口径漂移（FR-030 AC-4）。
- *
- * 对账区把「库存守恒」从文档里的一句话变成可点击的证据（NFR-009）。
- */
-
-import { Alert, Button, Card, Col, Result, Row, Statistic, Table, Tooltip, Typography } from 'antd'
+import {
+  Card,
+  Col,
+  Progress,
+  Row,
+  Statistic,
+  Switch,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd'
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { Campaign, CampaignStats, Integrity, Overview, Paged } from '../api/types'
+import { PageHeader } from '../components/PageHeader'
 
 export default function StatsPage() {
   const [overview, setOverview] = useState<Overview | null>(null)
   const [rows, setRows] = useState<CampaignStats[]>([])
   const [integrity, setIntegrity] = useState<Integrity | null>(null)
   const [loading, setLoading] = useState(true)
-  const [adminOnlyError, setAdminOnlyError] = useState(false)
+  const [auto, setAuto] = useState(true)
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
       const campaigns = await api.get<Paged<Campaign>>('/api/campaigns?page_size=50')
-      const stats = await Promise.all(
-        campaigns.items.map((c) => api.get<CampaignStats>(`/api/stats/campaigns/${c.id}`)),
+      setRows(
+        await Promise.all(
+          campaigns.items.map((c) => api.get<CampaignStats>(`/api/stats/campaigns/${c.id}`)),
+        ),
       )
-      setRows(stats)
-      // overview 与 integrity 仅 ADMIN 可读；OPERATOR 打开本页时会 403
+      // 全局汇总与数据校验仅管理员可读，运营访问本页时后端会拒绝
       try {
         const [o, i] = await Promise.all([
           api.get<Overview>('/api/stats/overview'),
@@ -36,8 +41,10 @@ export default function StatsPage() {
         setOverview(o)
         setIntegrity(i)
       } catch {
-        setAdminOnlyError(true)
+        setOverview(null)
+        setIntegrity(null)
       }
+      setUpdatedAt(new Date())
     } finally {
       setLoading(false)
     }
@@ -47,115 +54,165 @@ export default function StatsPage() {
     void load()
   }, [load])
 
+  // 自动刷新：运营看板常驻大屏时需要，风控与领取数据会持续变化
+  useEffect(() => {
+    if (!auto) return
+    const t = setInterval(load, 10000)
+    return () => clearInterval(t)
+  }, [auto, load])
+
   const basis = rows[0]
 
   return (
-    <div>
-      {adminOnlyError && (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message="全局汇总与对账区仅管理员可见"
-          description="后端对越权请求返回 403，前端不做绕过。"
-        />
-      )}
+    <>
+      <PageHeader
+        title="数据看板"
+        description={
+          updatedAt ? `数据更新于 ${updatedAt.toLocaleTimeString('zh-CN')}` : '正在加载数据'
+        }
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+            自动刷新
+            <Switch size="small" checked={auto} onChange={setAuto} style={{ marginLeft: 8 }} />
+          </Typography.Text>
+        }
+      />
 
       {overview && (
-        <Card title="全局概览" style={{ marginBottom: 16 }} extra={<Button onClick={load}>刷新</Button>}>
-          <Row gutter={16}>
-            <Col xs={12} md={4}>
-              <Statistic title="活动数" value={overview.campaign_count} />
-            </Col>
-            <Col xs={12} md={4}>
-              <Statistic title="总库存" value={overview.total_stock} />
-            </Col>
-            <Col xs={12} md={4}>
-              <Statistic title="总领取" value={overview.claimed_count} />
-            </Col>
-            <Col xs={12} md={4}>
-              <Statistic title="总核销" value={overview.used_count} />
-            </Col>
-            <Col xs={12} md={4}>
+        <Row gutter={16} style={{ marginBottom: 16 }}>
+          <Col xs={12} md={8} lg={4}>
+            <Card size="small">
+              <Statistic title="活动总数" value={overview.campaign_count} />
+            </Card>
+          </Col>
+          <Col xs={12} md={8} lg={4}>
+            <Card size="small">
+              <Statistic title="投放库存" value={overview.total_stock} suffix="张" />
+            </Card>
+          </Col>
+          <Col xs={12} md={8} lg={4}>
+            <Card size="small">
+              <Statistic title="累计领取" value={overview.claimed_count} suffix="张" />
+            </Card>
+          </Col>
+          <Col xs={12} md={8} lg={4}>
+            <Card size="small">
+              <Statistic title="累计核销" value={overview.used_count} suffix="张" />
+            </Card>
+          </Col>
+          <Col xs={12} md={8} lg={4}>
+            <Card size="small">
               <Statistic
-                title="近 24h 风控拦截"
+                title="近 24 小时拦截"
                 value={overview.risk_blocked_24h}
-                valueStyle={{ color: overview.risk_blocked_24h > 0 ? '#cf1322' : undefined }}
+                suffix="次"
+                valueStyle={overview.risk_blocked_24h > 0 ? { color: '#c0362c' } : undefined}
               />
-            </Col>
-            <Col xs={12} md={4}>
+            </Card>
+          </Col>
+          <Col xs={12} md={8} lg={4}>
+            <Card size="small">
               <Statistic
-                title="待处理风险标记"
+                title="待处理风险"
                 value={overview.risk_pending_count}
-                valueStyle={{ color: overview.risk_pending_count > 0 ? '#d46b08' : undefined }}
+                suffix="条"
+                valueStyle={overview.risk_pending_count > 0 ? { color: '#b7791f' } : undefined}
               />
-            </Col>
-          </Row>
-        </Card>
+            </Card>
+          </Col>
+        </Row>
       )}
 
-      <Card title="活动明细" style={{ marginBottom: 16 }}>
+      <Card
+        title="活动效果"
+        style={{ marginBottom: 16 }}
+        extra={
+          integrity ? (
+            <Tooltip
+              title={
+                integrity.ok
+                  ? '库存与券数校验一致'
+                  : `存在异常：超发 ${integrity.inv1_stock_overflow_count} 个活动`
+              }
+            >
+              <Tag color={integrity.ok ? 'green' : 'red'}>
+                {integrity.ok ? '数据校验正常' : '数据校验异常'}
+              </Tag>
+            </Tooltip>
+          ) : null
+        }
+      >
         <Table
           rowKey="campaign_id"
           loading={loading}
           dataSource={rows}
           pagination={false}
+          scroll={{ x: 900 }}
           columns={[
-            { title: '活动', dataIndex: 'campaign_name' },
-            { title: '总库存', dataIndex: 'total_stock' },
-            { title: '已领取', dataIndex: 'claimed_count' },
-            { title: '剩余库存', dataIndex: 'remaining_stock' },
+            {
+              title: '活动名称',
+              dataIndex: 'campaign_name',
+              fixed: 'left',
+              width: 200,
+              ellipsis: true,
+            },
+            { title: '投放', dataIndex: 'total_stock', width: 80, align: 'right' },
+            { title: '已领取', dataIndex: 'claimed_count', width: 90, align: 'right' },
+            { title: '剩余', dataIndex: 'remaining_stock', width: 80, align: 'right' },
             {
               title: (
                 <Tooltip title={basis?.claim_rate_basis}>
-                  <span style={{ borderBottom: '1px dashed #999' }}>领取率</span>
+                  <span style={{ borderBottom: '1px dotted #b3bac7' }}>领取率</span>
                 </Tooltip>
               ),
               dataIndex: 'claim_rate',
-              render: (v: number) => `${(v * 100).toFixed(1)}%`,
+              width: 150,
+              render: (v: number) => (
+                <Progress
+                  percent={Number((v * 100).toFixed(1))}
+                  size="small"
+                  strokeColor="#1b4b91"
+                />
+              ),
             },
             {
               title: (
                 <Tooltip title={basis?.redeem_rate_basis}>
-                  <span style={{ borderBottom: '1px dashed #999' }}>核销率</span>
+                  <span style={{ borderBottom: '1px dotted #b3bac7' }}>核销率</span>
                 </Tooltip>
               ),
               dataIndex: 'redeem_rate',
-              // claimed_count=0 时后端返回 null，此处显示「—」而非 0
-              render: (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(1)}%`),
+              width: 150,
+              render: (v: number | null) =>
+                v === null ? (
+                  <Typography.Text type="secondary">—</Typography.Text>
+                ) : (
+                  <Progress
+                    percent={Number((v * 100).toFixed(1))}
+                    size="small"
+                    strokeColor="#0f7b55"
+                  />
+                ),
             },
-            { title: '已核销', dataIndex: 'used_count' },
-            { title: '未核销未过期', dataIndex: 'active_count' },
-            { title: '未核销已过期', dataIndex: 'expired_count' },
+            { title: '已核销', dataIndex: 'used_count', width: 90, align: 'right' },
+            { title: '待使用', dataIndex: 'active_count', width: 90, align: 'right' },
+            {
+              title: '已过期',
+              dataIndex: 'expired_count',
+              width: 90,
+              align: 'right',
+              render: (v: number) => (
+                <Typography.Text type={v > 0 ? 'warning' : undefined}>{v}</Typography.Text>
+              ),
+            },
           ]}
         />
         {basis && (
-          <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
-            口径：领取率 —— {basis.claim_rate_basis}；核销率 —— {basis.redeem_rate_basis}
+          <Typography.Paragraph type="secondary" style={{ margin: '12px 0 0', fontSize: 12 }}>
+            领取率 = 已领取 / 投放库存；核销率 = 已核销 / 已领取
           </Typography.Paragraph>
         )}
       </Card>
-
-      {integrity && (
-        <Card title="对账自检">
-          <Result
-            status={integrity.ok ? 'success' : 'error'}
-            title={integrity.ok ? '两条不变量均成立' : '发现数据不一致'}
-            subTitle={
-              <div>
-                <div>INV-1 库存守恒：超发活动数 = {integrity.inv1_stock_overflow_count}</div>
-                <div>
-                  INV-2 券的完全划分：不一致活动 ={' '}
-                  {integrity.inv2_mismatch_campaign_ids.length
-                    ? integrity.inv2_mismatch_campaign_ids.join(', ')
-                    : '无'}
-                </div>
-              </div>
-            }
-            extra={<Button onClick={load}>重新校验</Button>}
-          />
-        </Card>
-      )}
-    </div>
+    </>
   )
 }

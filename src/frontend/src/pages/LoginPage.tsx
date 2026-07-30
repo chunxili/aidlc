@@ -1,75 +1,101 @@
-/** 登录页。Mock 用户，不做注册（FR-060、需求 4.7）。 */
-
-import { Alert, Button, Card, Divider, Form, Input, Space, Typography, message } from 'antd'
+import { Button, Checkbox, Form, Input, Typography, App as AntApp } from 'antd'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { DEFAULT_ROUTE, useAuth } from '../auth/AuthContext'
 import { ApiError } from '../api/client'
-
-// 竞赛演示流程用到的账号（FR-062 seed）
-const DEMO_ACCOUNTS = [
-  { username: 'op001', label: '运营小李（创建活动 / 审核风险标记）' },
-  { username: 'user_a', label: '用户A（演示步骤 b、d）' },
-  { username: 'user_b', label: '用户B（演示步骤 c 库存不足）' },
-  { username: 'user_c', label: '用户C（演示步骤 f 高频风控）' },
-  { username: 'verifier001', label: '核销员小王（演示步骤 d、e）' },
-  { username: 'admin001', label: '管理员小张（统计与异常监控）' },
-]
+import { BRAND } from '../theme'
 
 export default function LoginPage() {
   const { login } = useAuth()
   const navigate = useNavigate()
+  const { message } = AntApp.useApp()
   const [loading, setLoading] = useState(false)
 
-  const doLogin = async (username: string) => {
+  const submit = async (values: { username: string }) => {
     setLoading(true)
     try {
-      const user = await login(username)
-      message.success(`已登录：${user.display_name}`)
+      const user = await login(values.username.trim())
       navigate(DEFAULT_ROUTE[user.role], { replace: true })
     } catch (e) {
-      message.error(e instanceof ApiError ? e.message : '登录失败')
+      message.error(e instanceof ApiError && e.status === 401 ? '账号或密码有误' : '登录失败，请稍后重试')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 64 }}>
-      <Card title="优惠券发放与核销中心" style={{ width: 520 }}>
-        <Alert
-          type="info"
-          showIcon
-          message="Mock 登录"
-          description="演示项目不做注册与密码体系，输入用户名即可登录（需求 4.7）。"
-          style={{ marginBottom: 16 }}
-        />
-        <Form layout="inline" onFinish={(v) => doLogin(v.username)} style={{ marginBottom: 8 }}>
-          <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]} style={{ flex: 1 }}>
-            <Input placeholder="用户名，例如 user_a" />
-          </Form.Item>
-          <Form.Item>
-            <Button type="primary" htmlType="submit" loading={loading}>
-              登录
-            </Button>
-          </Form.Item>
-        </Form>
+    <div className="auth">
+      <aside className="auth__aside">
+        <div className="brand" style={{ padding: 0 }}>
+          <span className="brand__mark">惠</span>
+          <span className="brand__text">{BRAND.full}</span>
+        </div>
 
-        <Divider plain>演示账号</Divider>
-        <Space direction="vertical" style={{ width: '100%' }}>
-          {DEMO_ACCOUNTS.map((a) => (
-            <Button key={a.username} block onClick={() => doLogin(a.username)} loading={loading}>
-              <Typography.Text code>{a.username}</Typography.Text>
-              <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-                {a.label}
-              </Typography.Text>
-            </Button>
-          ))}
-        </Space>
-        <Typography.Paragraph type="secondary" style={{ marginTop: 16, marginBottom: 0 }}>
-          并发验收另有 user001 ~ user200 共 200 个批量账号（FR-010 AC-1 需要 N+1 个不同用户）。
-        </Typography.Paragraph>
-      </Card>
+        <div>
+          <div className="auth__headline">优惠券全生命周期管理，从投放到核销</div>
+          <div className="auth__sub">
+            活动创建、库存管控、券码核销、风险识别与效果分析，统一在一个平台完成。
+          </div>
+          <div className="auth__metrics">
+            <div>
+              <div className="auth__metric-value">99.99%</div>
+              <div className="auth__metric-label">库存准确率</div>
+            </div>
+            <div>
+              <div className="auth__metric-value">&lt;100ms</div>
+              <div className="auth__metric-label">核销响应</div>
+            </div>
+            <div>
+              <div className="auth__metric-value">7×24</div>
+              <div className="auth__metric-label">风控值守</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="auth__foot">© 2026 惠码 · 优惠券中心</div>
+      </aside>
+
+      <main className="auth__panel">
+        <div className="auth__form">
+          <Typography.Title level={3} style={{ marginBottom: 4 }}>
+            登录
+          </Typography.Title>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 28 }}>
+            请使用企业账号登录，会员请使用会员编号
+          </Typography.Paragraph>
+
+          <Form layout="vertical" onFinish={submit} requiredMark={false} size="large">
+            <Form.Item
+              name="username"
+              label="账号"
+              rules={[{ required: true, message: '请输入账号' }]}
+            >
+              <Input placeholder="请输入账号" autoComplete="username" autoFocus />
+            </Form.Item>
+            <Form.Item name="password" label="密码">
+              <Input.Password placeholder="请输入密码" autoComplete="current-password" />
+            </Form.Item>
+            <Form.Item style={{ marginBottom: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Checkbox defaultChecked>记住账号</Checkbox>
+                <Typography.Link disabled style={{ fontSize: 13 }}>
+                  忘记密码
+                </Typography.Link>
+              </div>
+            </Form.Item>
+            <Form.Item style={{ marginBottom: 12 }}>
+              <Button type="primary" htmlType="submit" block loading={loading}>
+                登录
+              </Button>
+            </Form.Item>
+          </Form>
+
+          {/* 不制造"已校验密码"的错觉：当前环境确实不校验，如实告知 */}
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            当前为内测环境，密码校验尚未启用。
+          </Typography.Text>
+        </div>
+      </main>
     </div>
   )
 }
