@@ -1,0 +1,64 @@
+# 一键部署（FR-071）。单机部署，三个服务：db + api + web。
+#
+#   docker compose up -d
+#
+# 缺少 AWS_BEARER_TOKEN_BEDROCK 时服务**仍能正常启动**，AI 功能自动降级
+# （FR-071 AC-2、FR-041、FR-051）。
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: coupon
+      POSTGRES_PASSWORD: coupon
+      POSTGRES_DB: coupon
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coupon -d coupon"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: ./src/backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # 容器内通过服务名访问数据库
+      DATABASE_URL: postgresql+psycopg://coupon:coupon@db:5432/coupon
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me}
+      SEED_NORMAL_USER_COUNT: ${SEED_NORMAL_USER_COUNT:-200}
+      RISK_WINDOW_SECONDS: ${RISK_WINDOW_SECONDS:-10}
+      RISK_HARD_THRESHOLD: ${RISK_HARD_THRESHOLD:-10}
+      RISK_GRAY_LOW: ${RISK_GRAY_LOW:-5}
+      RISK_ENABLED: ${RISK_ENABLED:-true}
+      BEDROCK_REGION: ${BEDROCK_REGION:-us-east-1}
+      BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-amazon.nova-lite-v1:0}
+      # 留空即降级模式；过期后替换此值并 docker compose up -d api 即生效
+      AWS_BEARER_TOKEN_BEDROCK: ${AWS_BEARER_TOKEN_BEDROCK:-}
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-4}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  web:
+    build:
+      context: ./src/frontend
+      args:
+        # 留空：nginx 把 /api 同源代理到 api 容器，前端走相对路径，无跨域
+        VITE_API_BASE: ${VITE_API_BASE:-}
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+
+volumes:
+  pgdata:
