@@ -1,8 +1,10 @@
 import {
+  Alert,
   Button,
   Card,
   Col,
   Empty,
+  Input,
   Modal,
   Result,
   Row,
@@ -22,6 +24,7 @@ import type {
   Category,
   ClaimResult,
   CouponType,
+  Recommendation,
   RecommendationResult,
 } from '../api/types'
 import { PageHeader } from '../components/PageHeader'
@@ -60,6 +63,56 @@ function Benefit({
   )
 }
 
+/** 推荐券卡片。「为你精选」与「AI 找券」两处共用，避免两套渲染逻辑漂移。 */
+function RecCard({
+  item,
+  onClaim,
+  claiming,
+}: {
+  item: Recommendation
+  onClaim: (id: number) => void
+  claiming: number | null
+}) {
+  return (
+    <Card className="coupon-card" size="small" hoverable>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <Benefit item={item} />
+          <Typography.Text strong ellipsis style={{ display: 'block', marginTop: 2 }}>
+            {item.campaign_name}
+          </Typography.Text>
+          <Space size={4} style={{ marginTop: 6 }}>
+            <Tag>{CATEGORY_LABEL[item.category]}</Tag>
+            <Tag color={item.coupon_type === 'CASH' ? 'volcano' : 'geekblue'}>
+              {COUPON_TYPE_LABEL[item.coupon_type]}
+            </Tag>
+          </Space>
+        </div>
+        <Button
+          type="primary"
+          onClick={() => onClaim(item.campaign_id)}
+          loading={claiming === item.campaign_id}
+        >
+          立即领取
+        </Button>
+      </div>
+      <Typography.Text strong style={{ display: 'block', marginTop: 10, fontSize: 13 }}>
+        {item.benefit_text}
+      </Typography.Text>
+      <Typography.Paragraph
+        type="secondary"
+        ellipsis={{ rows: 2 }}
+        style={{ margin: '6px 0 0', fontSize: 12.5, minHeight: 38 }}
+      >
+        {item.reason}
+      </Typography.Paragraph>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        仅剩 {item.remaining_stock} 张
+      </Typography.Text>
+    </Card>
+  )
+}
+
 export default function CouponsPage() {
   const { message, notification } = AntApp.useApp()
   const navigate = useNavigate()
@@ -70,6 +123,9 @@ export default function CouponsPage() {
   const [claimed, setClaimed] = useState<ClaimResult | null>(null)
   const [filter, setFilter] = useState<Category | '全部'>('全部')
   const [claiming, setClaiming] = useState<number | null>(null)
+  const [need, setNeed] = useState('')
+  const [needRecs, setNeedRecs] = useState<RecommendationResult | null>(null)
+  const [needLoading, setNeedLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -113,6 +169,24 @@ export default function CouponsPage() {
     }
   }
 
+  const findByNeed = async () => {
+    const q = need.trim()
+    if (!q) {
+      message.info('先描述一下你想要什么优惠')
+      return
+    }
+    setNeedLoading(true)
+    try {
+      setNeedRecs(
+        await api.post<RecommendationResult>('/api/recommendations/by-need', { need: q }),
+      )
+    } catch {
+      message.error('AI 找券失败，请稍后重试')
+    } finally {
+      setNeedLoading(false)
+    }
+  }
+
   const shown = useMemo(
     () => (filter === '全部' ? campaigns : campaigns.filter((c) => c.category === filter)),
     [campaigns, filter],
@@ -121,6 +195,55 @@ export default function CouponsPage() {
   return (
     <>
       <PageHeader title="领券中心" description="为你精选的优惠，先领先用" />
+
+      {/* AI 找券：用户自述需求，AI 理解后从全部可领券中匹配推荐 */}
+      <Card title="AI 找券 · 说说你想要什么" style={{ marginBottom: 16 }}>
+        <Space.Compact style={{ width: '100%' }}>
+          <Input.TextArea
+            value={need}
+            onChange={(e) => setNeed(e.target.value)}
+            placeholder="例如：周末想和朋友吃火锅，有没有餐饮满减？"
+            autoSize={{ minRows: 1, maxRows: 3 }}
+            maxLength={200}
+            onPressEnter={(e) => {
+              e.preventDefault()
+              void findByNeed()
+            }}
+          />
+          <Button type="primary" loading={needLoading} onClick={() => void findByNeed()}>
+            帮我找券
+          </Button>
+        </Space.Compact>
+
+        {needLoading ? (
+          <Skeleton active paragraph={{ rows: 2 }} style={{ marginTop: 16 }} />
+        ) : needRecs ? (
+          <div style={{ marginTop: 16 }}>
+            {needRecs.analysis ? (
+              <Alert
+                type={needRecs.degraded ? 'warning' : 'info'}
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={needRecs.analysis}
+              />
+            ) : null}
+            {!needRecs.items.length ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="没找到匹配的优惠，换个说法试试"
+              />
+            ) : (
+              <Row gutter={[16, 16]}>
+                {needRecs.items.map((r) => (
+                  <Col key={r.campaign_id} xs={24} md={12} lg={8}>
+                    <RecCard item={r} onClaim={claim} claiming={claiming} />
+                  </Col>
+                ))}
+              </Row>
+            )}
+          </div>
+        ) : null}
+      </Card>
 
       {/* 精选推荐：位于领取入口之前，用户在决策前即看到推荐依据 */}
       <Card
@@ -142,42 +265,7 @@ export default function CouponsPage() {
           <Row gutter={[16, 16]}>
             {recs.items.map((r) => (
               <Col key={r.campaign_id} xs={24} md={12} lg={8}>
-                <Card className="coupon-card" size="small" hoverable>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <Benefit item={r} />
-                      <Typography.Text strong ellipsis style={{ display: 'block', marginTop: 2 }}>
-                        {r.campaign_name}
-                      </Typography.Text>
-                      <Space size={4} style={{ marginTop: 6 }}>
-                        <Tag>{CATEGORY_LABEL[r.category]}</Tag>
-                        <Tag color={r.coupon_type === 'CASH' ? 'volcano' : 'geekblue'}>
-                          {COUPON_TYPE_LABEL[r.coupon_type]}
-                        </Tag>
-                      </Space>
-                    </div>
-                    <Button
-                      type="primary"
-                      onClick={() => claim(r.campaign_id)}
-                      loading={claiming === r.campaign_id}
-                    >
-                      立即领取
-                    </Button>
-                  </div>
-                  <Typography.Text strong style={{ display: 'block', marginTop: 10, fontSize: 13 }}>
-                    {r.benefit_text}
-                  </Typography.Text>
-                  <Typography.Paragraph
-                    type="secondary"
-                    ellipsis={{ rows: 2 }}
-                    style={{ margin: '6px 0 0', fontSize: 12.5, minHeight: 38 }}
-                  >
-                    {r.reason}
-                  </Typography.Paragraph>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    仅剩 {r.remaining_stock} 张
-                  </Typography.Text>
-                </Card>
+                <RecCard item={r} onClaim={claim} claiming={claiming} />
               </Col>
             ))}
           </Row>

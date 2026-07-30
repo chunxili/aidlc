@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import User
-from ..schemas import RecommendationOut
+from ..schemas import NeedRecommendationIn, RecommendationOut
 from ..security import require_user
 from ..services import recommend as svc
 
@@ -26,3 +26,13 @@ def recommendations(
     user: User = Depends(require_user),
 ) -> RecommendationOut:
     return svc.recommend(db, user.id, limit)
+
+
+@router.post("/by-need", response_model=RecommendationOut)
+def recommend_by_need(
+    body: NeedRecommendationIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+) -> RecommendationOut:
+    """用户自述需求 → AI 从全部可领券中匹配推荐（独立只读接口，不在领券路径上）。"""
+    return svc.recommend_by_need(db, user.id, body.need.strip(), None)

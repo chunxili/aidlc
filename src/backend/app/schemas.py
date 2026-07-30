@@ -270,6 +270,15 @@ class RecommendationOut(BaseModel):
     degraded: bool
     degrade_reason: str | None
     cold_start: bool
+    # AI 对用户需求的理解概述。仅"按需求找券"接口填充；自动推荐接口为 None。
+    # 默认 None 保证旧接口契约向后兼容。
+    analysis: str | None = None
+
+
+class NeedRecommendationIn(BaseModel):
+    """用户用一句话描述的需求，由 AI 理解后从全部可领券中匹配（FR-040 扩展）。"""
+
+    need: str = Field(..., min_length=1, max_length=200)
 
 
 # ---------- 风控 ----------
